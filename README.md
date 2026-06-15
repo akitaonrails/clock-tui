@@ -16,6 +16,18 @@ The recommended install method on Arch Linux is the prebuilt AUR package from th
 yay -S clock-tui-bin
 ```
 
+### macOS / Homebrew
+
+A Homebrew formula is provided in [`packaging/homebrew/tclock.rb`](packaging/homebrew/tclock.rb). It builds from source via Cargo, so it works on both Apple Silicon and Intel Macs (and Linuxbrew). Current Homebrew requires formulae to live in a tap, so add it to a local tap first:
+
+```shell
+brew tap-new "$USER/clocktui" --no-git
+cp packaging/homebrew/tclock.rb "$(brew --repository)/Library/Taps/$USER/homebrew-clocktui/Formula/"
+brew install "$USER/clocktui/tclock"
+```
+
+> Source-build keeps installation working independently of the release cadence. Once macOS release tarballs are published, the formula can be extended with prebuilt bottles for instant installs.
+
 ### GitHub Releases
 
 Prebuilt Linux binaries are published for `x86_64` and `aarch64`:

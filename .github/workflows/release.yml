@@ -52,11 +52,21 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             artifact: clock-tui-linux-x86_64
             builder: cargo
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             artifact: clock-tui-linux-aarch64
             builder: cross
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            artifact: clock-tui-macos-aarch64
+            builder: cargo
+            os: macos-14
+          - target: x86_64-apple-darwin
+            artifact: clock-tui-macos-x86_64
+            builder: cargo
+            os: macos-13
 
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v5
@@ -94,7 +104,11 @@ jobs:
 
       - name: Compute SHA256
         run: |
-          SHA=$(sha256sum ${{ matrix.artifact }}.tar.gz | awk '{print $1}')
+          if command -v sha256sum >/dev/null 2>&1; then
+            SHA=$(sha256sum ${{ matrix.artifact }}.tar.gz | awk '{print $1}')
+          else
+            SHA=$(shasum -a 256 ${{ matrix.artifact }}.tar.gz | awk '{print $1}')
+          fi
           echo "$SHA  ${{ matrix.artifact }}.tar.gz" > ${{ matrix.artifact }}.tar.gz.sha256
           echo "Built ${{ matrix.artifact }}.tar.gz sha256=$SHA"
 
