@@ -1,6 +1,8 @@
 # clock-tui (`tclock`)
 
-![Clock mode with command widgets](./assets/screenshot-clock-widgets.png)
+![Clock mode with NERV theme and command widgets](./assets/screenshot-clock-widgets.png)
+
+Clock mode supports runtime themes; this screenshot shows the built-in `nerv` theme with command widgets. Press `Shift+T` to cycle `default` → `evangelion` → `nerv`.
 
 `tclock` is a terminal clock app with clock, timer, stopwatch, and countdown modes.
 
@@ -176,7 +178,7 @@ Each widget supports:
 
 ```toml
 [clock]
-widget_themes = ["default", "nerv"]
+widget_themes = ["default", "evangelion", "nerv"]
 ```
 
 An empty or single-item list makes `Shift+T` harmless. For coherent app + bundled-widget theming, keep built-in names such as `default`, `evangelion`, and `nerv` unless you also add the palette to both `tclock` and `tclock-system-health`.

@@ -657,24 +657,40 @@ mod tests {
     #[test]
     fn theme_precedence_reorders_widget_themes() {
         assert_eq!(
-            resolve_widget_themes(None, None, vec!["default".to_string(), "nerv".to_string()]),
-            vec!["default", "nerv"]
+            resolve_widget_themes(
+                None,
+                None,
+                vec![
+                    "default".to_string(),
+                    "evangelion".to_string(),
+                    "nerv".to_string()
+                ]
+            ),
+            vec!["default", "evangelion", "nerv"]
         );
         assert_eq!(
             resolve_widget_themes(
                 None,
                 Some("nerv"),
-                vec!["default".to_string(), "nerv".to_string()]
+                vec![
+                    "default".to_string(),
+                    "evangelion".to_string(),
+                    "nerv".to_string()
+                ]
             ),
-            vec!["nerv", "default"]
+            vec!["nerv", "default", "evangelion"]
         );
         assert_eq!(
             resolve_widget_themes(
                 Some("default"),
                 Some("nerv"),
-                vec!["default".to_string(), "nerv".to_string()]
+                vec![
+                    "default".to_string(),
+                    "evangelion".to_string(),
+                    "nerv".to_string()
+                ]
             ),
-            vec!["default", "nerv"]
+            vec!["default", "evangelion", "nerv"]
         );
         assert_eq!(
             resolve_widget_themes(Some("eva"), None, vec!["default".to_string()]),

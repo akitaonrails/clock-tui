@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer};
 
 pub(crate) const DEFAULT_WIDGET_REFRESH_SECS: u64 = 15 * 60;
 pub(crate) const DEFAULT_WIDGET_TIMEOUT_SECS: u64 = 30;
-pub(crate) const DEFAULT_WIDGET_THEMES: [&str; 2] = ["default", "nerv"];
+pub(crate) const DEFAULT_WIDGET_THEMES: [&str; 3] = ["default", "evangelion", "nerv"];
 
 fn deserialize_timezone<'de, D>(deserializer: D) -> Result<Option<Tz>, D::Error>
 where
@@ -280,7 +280,10 @@ mod tests {
     #[test]
     fn clock_widget_themes_default_and_parse() {
         let default_config: Config = toml::from_str("[clock]").unwrap();
-        assert_eq!(default_config.clock.widget_themes, vec!["default", "nerv"]);
+        assert_eq!(
+            default_config.clock.widget_themes,
+            vec!["default", "evangelion", "nerv"]
+        );
 
         let custom_config: Config = toml::from_str(
             r#"

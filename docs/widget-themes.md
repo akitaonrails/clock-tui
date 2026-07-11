@@ -34,7 +34,7 @@ Use `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` to choose the ini
 
 ```toml
 [clock]
-widget_themes = ["default", "nerv"]
+widget_themes = ["default", "evangelion", "nerv"]
 ```
 
 An empty or single-item list makes `Shift+T` a no-op. For coherent app + `tclock-system-health` theming, keep built-in names such as `default`, `evangelion`, and `nerv` unless you add the palette to both `tclock` and the script below.

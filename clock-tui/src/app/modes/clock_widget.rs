@@ -1197,7 +1197,11 @@ mod tests {
     }
 
     fn default_themes() -> Vec<String> {
-        vec!["default".to_string(), "nerv".to_string()]
+        vec![
+            "default".to_string(),
+            "evangelion".to_string(),
+            "nerv".to_string(),
+        ]
     }
 
     fn default_clock_theme() -> ClockTheme {
@@ -1237,7 +1241,7 @@ mod tests {
 
         widgets.cycle_theme();
 
-        assert_eq!(widgets.current_theme(), "nerv");
+        assert_eq!(widgets.current_theme(), "evangelion");
         assert_eq!(widgets.widgets[0].output, "Loading...");
         assert!(widgets.widgets[0].next_run <= Instant::now());
         assert_eq!(widgets.widgets[1].output, "old hidden");
