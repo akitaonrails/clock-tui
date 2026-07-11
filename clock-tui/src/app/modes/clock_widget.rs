@@ -117,11 +117,11 @@ impl ClockTheme {
     }
 
     fn nerv(base_style: Style) -> Self {
-        // Screenshot-matched NERV palette: orange interface text on a dark
-        // substrate, with neon green active marks.
+        // Screenshot-matched NERV palette: red monitor clock, orange interface
+        // text on a dark substrate, with neon green active marks.
         Self {
             clock_style: base_style
-                .fg(Color::Indexed(208))
+                .fg(Color::Indexed(196))
                 .add_modifier(Modifier::BOLD),
             text_style: base_style.fg(Color::Indexed(214)),
             widget_style: base_style.fg(Color::Indexed(172)),

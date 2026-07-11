@@ -68,7 +68,7 @@ position = "bottom"
 
 - `default`: the original compact health palette: green OK, yellow warning, red error, cyan labels.
 - `evangelion`: the original purple/lavender Evangelion-inspired palette with orange labels and EVA green accents.
-- `nerv`: screenshot-inspired NERV colors: hot amber clock/chrome, EVA mint OK/active markers, amber warnings, alarm red failures.
+- `nerv`: screenshot-inspired NERV colors: red monitor clock, hot amber chrome/warnings, EVA mint OK/active markers, alarm red failures.
 
 ## Add a new theme
 

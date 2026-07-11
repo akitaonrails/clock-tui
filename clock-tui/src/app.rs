@@ -641,7 +641,7 @@ mod tests {
         assert_eq!(clock.current_widget_theme_for_test(), "nerv");
         assert_eq!(
             clock.current_theme_for_test().clock_style.fg,
-            Some(Color::Indexed(208))
+            Some(Color::Indexed(196))
         );
 
         app.on_key(KeyCode::Char('t'));

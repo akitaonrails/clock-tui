@@ -187,7 +187,7 @@ The repo ships a ready-to-use widget at [`examples/widgets/tclock-system-health`
 
 Run it with no arguments and it auto-detects common setups (backup-looking user timers with staleness derived from each timer's own period, timeshift via grub-btrfs, btrfs rows only when btrfs is mounted, removable media excluded). Host-specific tuning is plain flags — see `tclock-system-health --help`. The intended pattern is a tiny wrapper script on your PATH holding your host's flags, referenced from the widget config:
 
-The widget supports named color themes, including `default`, the original purple/lavender `evangelion` theme, and the screenshot-inspired amber/green `nerv` theme. It honors `TCLOCK_WIDGET_THEME`, so it works with `Shift+T` without a wrapper; an explicit `--theme` or `TCLOCK_SYSTEM_HEALTH_THEME` still wins. See [System-health widget themes](./docs/widget-themes.md) for usage and contributor notes. Packaged installs also include this guide as `/usr/share/doc/clock-tui/widget-themes.md`.
+The widget supports named color themes, including `default`, the original purple/lavender `evangelion` theme, and the screenshot-inspired red/amber/green `nerv` theme. It honors `TCLOCK_WIDGET_THEME`, so it works with `Shift+T` without a wrapper; an explicit `--theme` or `TCLOCK_SYSTEM_HEALTH_THEME` still wins. See [System-health widget themes](./docs/widget-themes.md) for usage and contributor notes. Packaged installs also include this guide as `/usr/share/doc/clock-tui/widget-themes.md`.
 
 ```toml
 [[clock.widgets]]
