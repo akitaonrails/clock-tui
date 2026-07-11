@@ -493,7 +493,6 @@ fn run_command(
                     Ok(status) => status,
                     Err(error) => return format!("[error] failed to wait for command: {}", error),
                 };
-                terminate_process_group(child.id());
                 let stdout = join_output(stdout);
                 let stderr = join_output(stderr);
                 return format_output(status.success(), stdout, stderr);
