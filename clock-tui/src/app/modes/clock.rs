@@ -9,7 +9,7 @@ use ratatui::{
     style::Style,
 };
 
-use super::clock_widget::{clock_height_for_size, clock_size_for_area, ClockWidgets};
+use super::clock_widget::{clock_height_for_size, clock_size_for_area, ClockTheme, ClockWidgets};
 use super::render_centered;
 
 pub(crate) struct Clock {
@@ -65,9 +65,18 @@ impl Clock {
         self.widgets.cycle_theme();
     }
 
+    pub(crate) fn current_theme(&self) -> ClockTheme {
+        self.widgets.current_clock_theme(self.style)
+    }
+
     #[cfg(test)]
     pub(crate) fn current_widget_theme_for_test(&self) -> &str {
         self.widgets.current_theme_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_theme_for_test(&self) -> ClockTheme {
+        self.current_theme()
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -97,7 +106,7 @@ impl Clock {
 
             self.render_clock(layout.clock_area, buf, time_str, header, layout.clock_size);
             self.widgets
-                .render(layout.widgets_area, area, buf, Style::default());
+                .render(layout.widgets_area, area, buf, self.current_theme());
         }
     }
 }
@@ -158,14 +167,16 @@ impl Clock {
         size: u16,
     ) {
         let font = BricksFont::new(size);
-        let text = ClockText::new(time_str.to_string(), &font, self.style);
-        render_centered(area, buf, &text, header, None);
+        let theme = self.current_theme();
+        let text = ClockText::new(time_str.to_string(), &font, theme.clock_style);
+        render_centered(area, buf, &text, header, None, theme.text_style);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
 
     #[test]
     fn widgets_get_extra_height_when_width_limits_square_clock() {
@@ -212,6 +223,38 @@ mod tests {
         assert_eq!(
             format_clock_header(now, Some(chrono_tz::America::New_York)),
             "Sunday, June 7 2026 America/New_York"
+        );
+    }
+
+    #[test]
+    fn clock_theme_cycle_updates_clock_palette() {
+        let mut clock = Clock::new(
+            1,
+            Style::default().fg(Color::Green),
+            true,
+            false,
+            true,
+            None,
+            Vec::new(),
+            vec!["nerv".to_string(), "default".to_string()],
+        );
+
+        assert_eq!(clock.current_widget_theme_for_test(), "nerv");
+        assert_eq!(
+            clock.current_theme_for_test().clock_style.fg,
+            Some(Color::Indexed(171))
+        );
+        assert_eq!(
+            clock.current_theme_for_test().text_style.fg,
+            Some(Color::Indexed(208))
+        );
+
+        clock.cycle_widget_theme();
+
+        assert_eq!(clock.current_widget_theme_for_test(), "default");
+        assert_eq!(
+            clock.current_theme_for_test().clock_style.fg,
+            Some(Color::Green)
         );
     }
 }

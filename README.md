@@ -161,7 +161,7 @@ The clock automatically sizes itself into the top area when widgets are configur
 
 Widgets with `position = "bottom"` are placed in a full-width band beneath the widget row instead, stacked in config order and each sized to exactly fit its output. The widget row keeps a minimum height when both are present, and a bottom widget that cannot get at least 3 rows is hidden rather than squeezed. Bottom widgets don't count against the per-row widget limits, so a status strip can coexist with a full row of columns.
 
-When a widget has more output than fits on screen, scroll it with the mouse wheel over that widget. `Home` and `End` jump the active widget to the top or bottom. In clock mode, press `Shift+T` to cycle the configured widget theme; lowercase `t` still switches to Timer mode.
+When a widget has more output than fits on screen, scroll it with the mouse wheel over that widget. `Home` and `End` jump the active widget to the top or bottom. In clock mode, press `Shift+T` to cycle the configured clock theme; lowercase `t` still switches to Timer mode.
 
 Each widget supports:
 
@@ -171,14 +171,14 @@ Each widget supports:
 - `timeout_secs`: command timeout, default `30`
 - `position`: `"auto"` (default, widget row) or `"bottom"` (full-width band below the row, sized to content)
 
-The app injects the current widget theme into every widget subprocess as `TCLOCK_WIDGET_THEME`. Theme names are a contract between your config and the widget commands: a command must understand the name it receives. The default cycle matches the bundled system-health widget (`default`, then `nerv`) and can be customized under `[clock]` for your own themed widgets:
+`widget_themes` controls the clock-mode theme cycle. For built-in app palettes (`default` and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also injects the current theme name into every widget subprocess as `TCLOCK_WIDGET_THEME`. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
 
 ```toml
 [clock]
 widget_themes = ["default", "nerv"]
 ```
 
-An empty or single-item list makes `Shift+T` harmless. For the bundled `tclock-system-health`, keep `default`/`nerv` unless you also add that theme to the script.
+An empty or single-item list makes `Shift+T` harmless. For coherent app + bundled-widget theming, keep `default`/`nerv` unless you also add the palette to both `tclock` and `tclock-system-health`.
 
 ### Bundled example: system-health widget
 

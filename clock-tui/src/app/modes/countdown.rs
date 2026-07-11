@@ -42,6 +42,13 @@ impl Widget for &Countdown {
 
         let font = BricksFont::new(self.size);
         let text = ClockText::new(time_str.to_string(), &font, self.style);
-        render_centered(area, buf, &text, self.title.to_owned(), None);
+        render_centered(
+            area,
+            buf,
+            &text,
+            self.title.to_owned(),
+            None,
+            Style::default(),
+        );
     }
 }

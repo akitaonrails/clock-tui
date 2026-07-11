@@ -49,7 +49,7 @@ impl Widget for &Stopwatch {
         } else {
             None
         };
-        render_centered(area, buf, &text, None, footer);
+        render_centered(area, buf, &text, None, footer, Style::default());
     }
 }
 

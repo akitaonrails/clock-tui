@@ -94,6 +94,7 @@ fn render_centered(
     text: &ClockText,
     header: Option<String>,
     footer: Option<String>,
+    label_style: Style,
 ) {
     let text_size = text.size();
     let mut text_area = Rect {
@@ -111,7 +112,7 @@ fn render_centered(
 
     let render_text_center = |text: &str, top: u16, buf: &mut Buffer| {
         let text_len = text.len() as u16;
-        let paragrahp = Paragraph::new(Span::from(text)).style(Style::default());
+        let paragrahp = Paragraph::new(Span::from(text)).style(label_style);
 
         let para_area = Rect {
             x: area.left() + (area.width.saturating_sub(text_len)) / 2,
@@ -177,5 +178,28 @@ mod tests {
     fn should_flash_uses_first_half_of_each_second() {
         assert!(should_flash(Duration::milliseconds(-499)));
         assert!(!should_flash(Duration::milliseconds(-500)));
+    }
+
+    #[test]
+    fn render_centered_applies_header_footer_style() {
+        use crate::clock_text::font::bricks::BricksFont;
+        use ratatui::style::Color;
+
+        let area = ratatui::layout::Rect::new(0, 0, 40, 12);
+        let mut buffer = Buffer::empty(area);
+        let font = BricksFont::new(1);
+        let text = ClockText::new("12".to_string(), &font, Style::default());
+
+        render_centered(
+            area,
+            &mut buffer,
+            &text,
+            Some("Header".to_string()),
+            Some("Footer".to_string()),
+            Style::default().fg(Color::LightYellow),
+        );
+
+        let header_x = area.x + (area.width - "Header".len() as u16) / 2;
+        assert_eq!(buffer[(header_x, 1)].style().fg, Some(Color::LightYellow));
     }
 }

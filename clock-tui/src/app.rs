@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_t_cycles_clock_widget_theme_and_lowercase_t_does_not() {
+    fn uppercase_t_cycles_clock_theme_and_lowercase_t_does_not() {
         let clock = Clock::new(
             DEFAULT_CLOCK_SIZE,
             Style::default(),
@@ -585,12 +585,11 @@ mod tests {
         };
 
         app.on_key(KeyCode::Char('T'));
+        let clock = app.clock.as_ref().expect("clock mode remains active");
+        assert_eq!(clock.current_widget_theme_for_test(), "nerv");
         assert_eq!(
-            app.clock
-                .as_ref()
-                .expect("clock mode remains active")
-                .current_widget_theme_for_test(),
-            "nerv"
+            clock.current_theme_for_test().clock_style.fg,
+            Some(Color::Indexed(171))
         );
 
         app.on_key(KeyCode::Char('t'));

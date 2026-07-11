@@ -62,6 +62,53 @@ pub(crate) struct ClockWidgets {
     theme_index: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ClockTheme {
+    pub(crate) clock_style: Style,
+    pub(crate) text_style: Style,
+    pub(crate) widget_style: Style,
+    pub(crate) widget_title_style: Style,
+    pub(crate) widget_marker_style: Style,
+}
+
+impl ClockTheme {
+    pub(crate) fn named(name: &str, base_style: Style) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "nerv" => Self {
+                // Match the bundled tclock-system-health NERV palette:
+                // purple title, NERV orange labels, muted lavender base, EVA
+                // green accent.
+                clock_style: base_style
+                    .fg(Color::Indexed(171))
+                    .add_modifier(Modifier::BOLD),
+                text_style: base_style.fg(Color::Indexed(208)),
+                widget_style: base_style.fg(Color::Indexed(103)),
+                widget_title_style: base_style
+                    .fg(Color::Indexed(99))
+                    .add_modifier(Modifier::BOLD)
+                    .remove_modifier(Modifier::DIM),
+                widget_marker_style: base_style
+                    .fg(Color::Indexed(118))
+                    .add_modifier(Modifier::BOLD)
+                    .remove_modifier(Modifier::DIM),
+            },
+            _ => Self {
+                clock_style: base_style,
+                text_style: base_style,
+                widget_style: base_style,
+                widget_title_style: base_style
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::BOLD)
+                    .remove_modifier(Modifier::DIM),
+                widget_marker_style: base_style
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+                    .remove_modifier(Modifier::DIM),
+            },
+        }
+    }
+}
+
 struct ClockWidget {
     title: Option<String>,
     command: Vec<String>,
@@ -196,6 +243,10 @@ impl ClockWidgets {
             .unwrap_or("default")
     }
 
+    pub(crate) fn current_clock_theme(&self, base_style: Style) -> ClockTheme {
+        ClockTheme::named(self.current_theme(), base_style)
+    }
+
     #[cfg(test)]
     pub(crate) fn current_theme_for_test(&self) -> &str {
         self.current_theme()
@@ -206,7 +257,7 @@ impl ClockWidgets {
         area: Rect,
         terminal_area: Rect,
         buf: &mut Buffer,
-        style: Style,
+        theme: ClockTheme,
     ) {
         self.viewports = vec![Rect::default(); self.widgets.len()];
         for widget in &mut self.widgets {
@@ -274,7 +325,7 @@ impl ClockWidgets {
                 self.viewports[index] = viewport;
                 let widget = &mut self.widgets[index];
                 widget.visible = true;
-                widget.render(viewport, buf, style);
+                widget.render(viewport, buf, theme);
             }
         }
 
@@ -293,7 +344,7 @@ impl ClockWidgets {
             self.viewports[index] = viewport;
             let widget = &mut self.widgets[index];
             widget.visible = true;
-            widget.render(viewport, buf, style);
+            widget.render(viewport, buf, theme);
         }
     }
 
@@ -344,11 +395,11 @@ impl Drop for ClockWidgets {
 }
 
 impl ClockWidget {
-    fn render(&mut self, area: Rect, buf: &mut Buffer, style: Style) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer, theme: ClockTheme) {
         self.clamp_scroll(area);
         let title = self.title();
-        let paragraph = Paragraph::new(widget_text(&title, &self.output, style))
-            .style(style)
+        let paragraph = Paragraph::new(widget_text(&title, &self.output, theme))
+            .style(theme.widget_style)
             .scroll((self.scroll, 0))
             .wrap(Wrap { trim: false });
 
@@ -393,12 +444,16 @@ fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
 
 fn widget_text_height(title: &str, output: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
-    let total = widget_text(title, output, Style::default())
-        .lines
-        .iter()
-        .fold(0usize, |total, line| {
-            total.saturating_add(line.width().max(1).div_ceil(width))
-        });
+    let total = widget_text(
+        title,
+        output,
+        ClockTheme::named("default", Style::default()),
+    )
+    .lines
+    .iter()
+    .fold(0usize, |total, line| {
+        total.saturating_add(line.width().max(1).div_ceil(width))
+    });
 
     total.min(u16::MAX as usize) as u16
 }
@@ -598,27 +653,19 @@ fn normalize_output(output: &str) -> String {
     output.replace('\r', "").trim_end().to_string()
 }
 
-fn widget_text(title: &str, output: &str, base_style: Style) -> Text<'static> {
+fn widget_text(title: &str, output: &str, theme: ClockTheme) -> Text<'static> {
     // An explicitly empty title (`title = ""`) suppresses the title line so the
     // command output fully owns the widget area (e.g. self-rendered headers).
     let mut lines = if title.is_empty() {
         Vec::new()
     } else {
-        let title_style = base_style
-            .fg(Color::Gray)
-            .add_modifier(Modifier::BOLD)
-            .remove_modifier(Modifier::DIM);
-        let marker_style = base_style
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-            .remove_modifier(Modifier::DIM);
         vec![Line::from(vec![
-            Span::styled("● ".to_string(), marker_style),
-            Span::styled(title.to_string(), title_style),
+            Span::styled("● ".to_string(), theme.widget_marker_style),
+            Span::styled(title.to_string(), theme.widget_title_style),
         ])]
     };
 
-    lines.extend(ansi_lines(output, base_style));
+    lines.extend(ansi_lines(output, theme.widget_style));
     Text::from(lines)
 }
 
@@ -879,10 +926,10 @@ mod tests {
 
     #[test]
     fn empty_title_suppresses_title_line() {
-        let untitled = widget_text("", "hello\nworld", Style::default());
+        let untitled = widget_text("", "hello\nworld", default_clock_theme());
         assert_eq!(untitled.lines.len(), 2);
 
-        let titled = widget_text("Health", "hello\nworld", Style::default());
+        let titled = widget_text("Health", "hello\nworld", default_clock_theme());
         assert_eq!(titled.lines.len(), 3);
 
         assert_eq!(widget_text_height("", "one\ntwo", 80), 2);
@@ -937,7 +984,7 @@ mod tests {
         let terminal_area = Rect::new(0, 0, 80, 40);
         let mut buffer = Buffer::empty(terminal_area);
 
-        widgets.render(area, terminal_area, &mut buffer, Style::default());
+        widgets.render(area, terminal_area, &mut buffer, default_clock_theme());
 
         // row widgets side by side on top
         assert!(widgets.widgets[0].visible);
@@ -968,7 +1015,7 @@ mod tests {
         let area = Rect::new(0, 0, 240, 50);
         let mut buffer = Buffer::empty(area);
 
-        widgets.render(area, area, &mut buffer, Style::default());
+        widgets.render(area, area, &mut buffer, default_clock_theme());
 
         assert_eq!(widgets.widgets.len(), ULTRAWIDE_TERMINAL_WIDGETS + 1);
         assert!(widgets
@@ -987,7 +1034,7 @@ mod tests {
         let area = Rect::new(0, 0, 60, 30);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 30));
 
-        widgets.render(area, area, &mut buffer, Style::default());
+        widgets.render(area, area, &mut buffer, default_clock_theme());
 
         assert!(widgets.widgets[0].visible);
         let viewport = widgets.viewports[0];
@@ -1005,7 +1052,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 20);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 20));
 
-        widgets.render(area, area, &mut buffer, Style::default());
+        widgets.render(area, area, &mut buffer, default_clock_theme());
 
         // the row keeps its minimum height even with oversized bottom output
         assert!(widgets.viewports[0].height >= MIN_WIDGET_ROW_HEIGHT - 2);
@@ -1025,7 +1072,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 9);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 9));
 
-        widgets.render(area, area, &mut buffer, Style::default());
+        widgets.render(area, area, &mut buffer, default_clock_theme());
 
         assert!(!widgets.widgets[1].visible);
         assert_eq!(widgets.viewports[1], Rect::default());
@@ -1044,7 +1091,7 @@ mod tests {
             Rect::new(0, 2, 40, 8),
             Rect::new(0, 0, 40, 10),
             &mut buffer,
-            Style::default(),
+            default_clock_theme(),
         );
 
         assert_eq!(widgets.viewports.len(), 2);
@@ -1066,7 +1113,7 @@ mod tests {
             Rect::new(0, 0, 40, 8),
             Rect::new(0, 0, 40, 8),
             &mut buffer,
-            Style::default(),
+            default_clock_theme(),
         );
 
         widgets.scroll_at(1, 1, 50);
@@ -1074,7 +1121,7 @@ mod tests {
             Rect::new(0, 0, 40, 8),
             Rect::new(0, 0, 40, 8),
             &mut buffer,
-            Style::default(),
+            default_clock_theme(),
         );
         assert_eq!(widgets.active_widget, Some(0));
         assert_eq!(
@@ -1125,6 +1172,10 @@ mod tests {
         vec!["default".to_string(), "nerv".to_string()]
     }
 
+    fn default_clock_theme() -> ClockTheme {
+        ClockTheme::named("default", Style::default())
+    }
+
     #[test]
     fn command_receives_current_widget_theme_env() {
         let output = run_command(
@@ -1149,7 +1200,7 @@ mod tests {
         );
         let area = Rect::new(0, 0, 40, 8);
         let mut buffer = Buffer::empty(area);
-        widgets.render(area, area, &mut buffer, Style::default());
+        widgets.render(area, area, &mut buffer, default_clock_theme());
         widgets.widgets[0].output = "old".to_string();
         widgets.widgets[0].next_run = Instant::now() + Duration::from_secs(60);
         widgets.widgets[1].visible = false;
@@ -1165,7 +1216,7 @@ mod tests {
         assert!(widgets.widgets[1].next_run <= Instant::now());
 
         let mut single = ClockWidgets::new(vec![widget_config("one")], vec!["only".to_string()]);
-        single.render(area, area, &mut buffer, Style::default());
+        single.render(area, area, &mut buffer, default_clock_theme());
         single.widgets[0].output = "old".to_string();
         single.cycle_theme();
         assert_eq!(single.current_theme(), "only");
@@ -1234,6 +1285,25 @@ mod tests {
             .style
             .add_modifier
             .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn ansi_reset_restores_themed_widget_base_style() {
+        let base_style = Style::default().fg(Color::LightCyan);
+        let lines = ansi_lines("base \x1b[31mred\x1b[0m base", base_style);
+
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::LightCyan));
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Red));
+        assert_eq!(lines[0].spans[2].style.fg, Some(Color::LightCyan));
+    }
+
+    #[test]
+    fn widget_title_chrome_uses_clock_theme_styles() {
+        let text = widget_text("Health", "ok", ClockTheme::named("nerv", Style::default()));
+
+        assert_eq!(text.lines[0].spans[0].style.fg, Some(Color::Indexed(118)));
+        assert_eq!(text.lines[0].spans[1].style.fg, Some(Color::Indexed(99)));
+        assert_eq!(text.lines[1].spans[0].style.fg, Some(Color::Indexed(103)));
     }
 
     #[test]

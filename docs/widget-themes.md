@@ -22,14 +22,14 @@ Use the Evangelion/NERV-inspired theme:
 tclock-system-health --theme nerv
 ```
 
-When used as a `tclock` clock widget, the app sets `TCLOCK_WIDGET_THEME` for every widget subprocess. Press `Shift+T` in clock mode to cycle the configured widget themes; lowercase `t` still switches to Timer mode. Theme names are a contract between your config and the widget commands: a command must understand the name it receives. The default cycle matches this bundled widget (`default`, then `nerv`) and can be customized in config for widgets that support other names:
+When used as a `tclock` clock widget, `widget_themes` controls the clock-mode theme cycle. Press `Shift+T` in clock mode to cycle the configured themes; lowercase `t` still switches to Timer mode. For built-in app palettes (`default` and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also sets `TCLOCK_WIDGET_THEME` for every widget subprocess. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
 
 ```toml
 [clock]
 widget_themes = ["default", "nerv"]
 ```
 
-An empty or single-item list makes `Shift+T` a no-op. For `tclock-system-health`, keep `default`/`nerv` unless you also add that theme below.
+An empty or single-item list makes `Shift+T` a no-op. For coherent app + `tclock-system-health` theming, keep `default`/`nerv` unless you add the palette to both `tclock` and the script below.
 
 You can also set the system-health-specific environment variable, which is convenient in wrapper scripts and takes precedence over `TCLOCK_WIDGET_THEME`:
 
@@ -63,7 +63,7 @@ position = "bottom"
 
 ## Add a new theme
 
-Themes live in `examples/widgets/tclock-system-health` and are intentionally small Bash functions.
+The bundled widget's ANSI themes live in `examples/widgets/tclock-system-health` and are intentionally small Bash functions. To make a new name also change `tclock`'s own clock/date/widget chrome colors, add a matching app palette in `ClockTheme::named`.
 
 Add a function named `theme_<name>()` that sets these semantic variables:
 

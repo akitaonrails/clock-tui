@@ -177,7 +177,7 @@ impl Widget for &Timer {
                     self.execute_result.borrow().clone()
                 };
 
-                render_centered(area, buf, &text, header, footer);
+                render_centered(area, buf, &text, header, footer, Style::default());
             }
         } else {
             // Normal rendering logic when timer has not reached zero
@@ -197,7 +197,7 @@ impl Widget for &Timer {
                 self.execute_result.borrow().clone()
             };
 
-            render_centered(area, buf, &text, header, footer);
+            render_centered(area, buf, &text, header, footer, Style::default());
         }
     }
 }
