@@ -62,7 +62,8 @@
 #   --single-column                 stack all rows instead of pairing
 #   --no-btrfs                      omit the btrfs row even if btrfs is mounted
 #   --title TEXT                    header title (default "System Health")
-#   --theme NAME                    color theme: default, nerv (default: default;
+#   --theme NAME                    color theme: default, evangelion, nerv
+#                                   (default: default;
 #                                   or $TCLOCK_SYSTEM_HEALTH_THEME, falling back
 #                                   to generic $TCLOCK_WIDGET_THEME from tclock)
 #   --list-themes                   print available themes and exit
@@ -87,9 +88,9 @@ theme_default() {
   OK="${G}✔${N}"; WA="${Y}▲${N}"; ER="${R}✖${N}"
 }
 
-theme_nerv() {
-  # Evangelion/NERV-inspired terminal palette: deep purple labels, tactical
-  # orange warnings, EVA green success, and alarm red failures.
+theme_evangelion() {
+  # Original Evangelion-inspired terminal palette: deep purple labels,
+  # tactical orange warnings, EVA green success, and alarm red failures.
   G=$(sgr '38;5;118')     # EVA green
   Y=$(sgr '38;5;208')     # NERV orange
   R=$(sgr '38;5;196')     # alarm red
@@ -100,8 +101,22 @@ theme_nerv() {
   OK="${G}◆${N}"; WA="${Y}△${N}"; ER="${R}▣${N}"
 }
 
+theme_nerv() {
+  # Screenshot-matched NERV terminal palette: amber/orange UI language,
+  # neon green status accents, and emergency red failures.
+  G=$(sgr '38;5;48')      # neon green
+  Y=$(sgr '38;5;214')     # amber warning
+  R=$(sgr '38;5;196')     # emergency red
+  D=$(sgr '38;5;242')     # dim neutral gray
+  B=$(sgr '1;38;5;214')   # bold amber title
+  N=$'\033[0m'
+  LBL=$(sgr '1;38;5;208') # bold orange section labels
+  OK="${G}◆${N}"; WA="${Y}▲${N}"; ER="${R}▣${N}"
+}
+
 list_themes() {
   printf 'default\n'
+  printf 'evangelion\n'
   printf 'nerv\n'
 }
 
@@ -110,6 +125,7 @@ available_themes() { list_themes | paste -sd, - | sed 's/,/, /g'; }
 apply_theme() {
   case "$1" in
     default) theme_default ;;
+    evangelion) theme_evangelion ;;
     nerv) theme_nerv ;;
     *) die "unknown theme: $1 (available: $(available_themes))" ;;
   esac

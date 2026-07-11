@@ -74,6 +74,7 @@ pub(crate) struct ClockTheme {
 impl ClockTheme {
     pub(crate) fn named(name: &str, base_style: Style) -> Self {
         match name.trim().to_ascii_lowercase().as_str() {
+            "evangelion" => Self::evangelion(base_style),
             "nerv" => Self::nerv(base_style),
             _ => Self::default_theme(base_style),
         }
@@ -95,9 +96,9 @@ impl ClockTheme {
         }
     }
 
-    fn nerv(base_style: Style) -> Self {
-        // Match the bundled tclock-system-health NERV palette: purple title,
-        // NERV orange labels, muted lavender base, EVA green accent.
+    fn evangelion(base_style: Style) -> Self {
+        // Original Evangelion-inspired palette: purple title, NERV orange
+        // labels, muted lavender base, EVA green accent.
         Self {
             clock_style: base_style
                 .fg(Color::Indexed(171))
@@ -110,6 +111,26 @@ impl ClockTheme {
                 .remove_modifier(Modifier::DIM),
             widget_marker_style: base_style
                 .fg(Color::Indexed(118))
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM),
+        }
+    }
+
+    fn nerv(base_style: Style) -> Self {
+        // Screenshot-matched NERV palette: orange interface text on a dark
+        // substrate, with neon green active marks.
+        Self {
+            clock_style: base_style
+                .fg(Color::Indexed(208))
+                .add_modifier(Modifier::BOLD),
+            text_style: base_style.fg(Color::Indexed(214)),
+            widget_style: base_style.fg(Color::Indexed(172)),
+            widget_title_style: base_style
+                .fg(Color::Indexed(214))
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM),
+            widget_marker_style: base_style
+                .fg(Color::Indexed(48))
                 .add_modifier(Modifier::BOLD)
                 .remove_modifier(Modifier::DIM),
         }
@@ -1307,6 +1328,19 @@ mod tests {
     #[test]
     fn widget_title_chrome_uses_clock_theme_styles() {
         let text = widget_text("Health", "ok", ClockTheme::named("nerv", Style::default()));
+
+        assert_eq!(text.lines[0].spans[0].style.fg, Some(Color::Indexed(48)));
+        assert_eq!(text.lines[0].spans[1].style.fg, Some(Color::Indexed(214)));
+        assert_eq!(text.lines[1].spans[0].style.fg, Some(Color::Indexed(172)));
+    }
+
+    #[test]
+    fn evangelion_theme_preserves_original_nerv_palette() {
+        let text = widget_text(
+            "Health",
+            "ok",
+            ClockTheme::named("evangelion", Style::default()),
+        );
 
         assert_eq!(text.lines[0].spans[0].style.fg, Some(Color::Indexed(118)));
         assert_eq!(text.lines[0].spans[1].style.fg, Some(Color::Indexed(99)));

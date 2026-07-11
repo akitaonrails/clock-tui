@@ -172,14 +172,14 @@ Each widget supports:
 - `timeout_secs`: command timeout, default `30`
 - `position`: `"auto"` (default, widget row) or `"bottom"` (full-width band below the row, sized to content)
 
-`widget_themes` controls the clock-mode theme cycle. For built-in app palettes (`default` and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also injects the current theme name into every widget subprocess as `TCLOCK_WIDGET_THEME`. `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` chooses the initial theme and keeps the configured cycle order after it. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
+`widget_themes` controls the clock-mode theme cycle. For built-in app palettes (`default`, `evangelion`, and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also injects the current theme name into every widget subprocess as `TCLOCK_WIDGET_THEME`. `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` chooses the initial theme and keeps the configured cycle order after it. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
 
 ```toml
 [clock]
 widget_themes = ["default", "nerv"]
 ```
 
-An empty or single-item list makes `Shift+T` harmless. For coherent app + bundled-widget theming, keep `default`/`nerv` unless you also add the palette to both `tclock` and `tclock-system-health`.
+An empty or single-item list makes `Shift+T` harmless. For coherent app + bundled-widget theming, keep built-in names such as `default`, `evangelion`, and `nerv` unless you also add the palette to both `tclock` and `tclock-system-health`.
 
 ### Bundled example: system-health widget
 
@@ -187,7 +187,7 @@ The repo ships a ready-to-use widget at [`examples/widgets/tclock-system-health`
 
 Run it with no arguments and it auto-detects common setups (backup-looking user timers with staleness derived from each timer's own period, timeshift via grub-btrfs, btrfs rows only when btrfs is mounted, removable media excluded). Host-specific tuning is plain flags — see `tclock-system-health --help`. The intended pattern is a tiny wrapper script on your PATH holding your host's flags, referenced from the widget config:
 
-The widget supports named color themes, including the original `default` theme and an Evangelion/NERV-inspired `nerv` theme. It honors `TCLOCK_WIDGET_THEME`, so it works with `Shift+T` without a wrapper; an explicit `--theme` or `TCLOCK_SYSTEM_HEALTH_THEME` still wins. See [System-health widget themes](./docs/widget-themes.md) for usage and contributor notes. Packaged installs also include this guide as `/usr/share/doc/clock-tui/widget-themes.md`.
+The widget supports named color themes, including `default`, the original purple/lavender `evangelion` theme, and the screenshot-inspired amber/green `nerv` theme. It honors `TCLOCK_WIDGET_THEME`, so it works with `Shift+T` without a wrapper; an explicit `--theme` or `TCLOCK_SYSTEM_HEALTH_THEME` still wins. See [System-health widget themes](./docs/widget-themes.md) for usage and contributor notes. Packaged installs also include this guide as `/usr/share/doc/clock-tui/widget-themes.md`.
 
 ```toml
 [[clock.widgets]]

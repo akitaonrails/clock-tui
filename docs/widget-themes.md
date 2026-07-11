@@ -16,13 +16,19 @@ Use the default theme explicitly:
 tclock-system-health --theme default
 ```
 
-Use the Evangelion/NERV-inspired theme:
+Use the screenshot-inspired NERV terminal theme:
 
 ```bash
 tclock-system-health --theme nerv
 ```
 
-When used as a `tclock` clock widget, `widget_themes` controls the clock-mode theme cycle. Press `Shift+T` in clock mode to cycle the configured themes; lowercase `t` still switches to Timer mode. For built-in app palettes (`default` and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also sets `TCLOCK_WIDGET_THEME` for every widget subprocess. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
+Use the older purple/lavender Evangelion-inspired palette:
+
+```bash
+tclock-system-health --theme evangelion
+```
+
+When used as a `tclock` clock widget, `widget_themes` controls the clock-mode theme cycle. Press `Shift+T` in clock mode to cycle the configured themes; lowercase `t` still switches to Timer mode. For built-in app palettes (`default`, `evangelion`, and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also sets `TCLOCK_WIDGET_THEME` for every widget subprocess. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
 
 Use `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` to choose the initial app/widget theme without editing config. Explicit `--theme` wins over the environment variable.
 
@@ -31,7 +37,7 @@ Use `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` to choose the ini
 widget_themes = ["default", "nerv"]
 ```
 
-An empty or single-item list makes `Shift+T` a no-op. For coherent app + `tclock-system-health` theming, keep `default`/`nerv` unless you add the palette to both `tclock` and the script below.
+An empty or single-item list makes `Shift+T` a no-op. For coherent app + `tclock-system-health` theming, keep built-in names such as `default`, `evangelion`, and `nerv` unless you add the palette to both `tclock` and the script below.
 
 You can also set the system-health-specific environment variable, which is convenient in wrapper scripts and takes precedence over `TCLOCK_WIDGET_THEME`:
 
@@ -61,7 +67,8 @@ position = "bottom"
 ## Built-in themes
 
 - `default`: the original compact health palette: green OK, yellow warning, red error, cyan labels.
-- `nerv`: Evangelion/NERV-inspired colors: EVA green OK, NERV orange warnings, alarm red failures, purple section labels.
+- `evangelion`: the original purple/lavender Evangelion-inspired palette with orange labels and EVA green accents.
+- `nerv`: screenshot-inspired NERV colors: hot amber clock/chrome, EVA mint OK/active markers, amber warnings, alarm red failures.
 
 ## Add a new theme
 

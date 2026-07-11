@@ -121,7 +121,7 @@ pub struct App {
     #[arg(short, long, value_parser = parse_size)]
     pub size: Option<u16>,
 
-    /// Initial clock/widget theme, for example "default" or "nerv". Falls back to TCLOCK_WIDGET_THEME, then config.
+    /// Initial clock/widget theme, for example "default", "evangelion", or "nerv". Falls back to TCLOCK_WIDGET_THEME, then config.
     #[arg(long, value_parser = parse_theme_name)]
     pub theme: Option<String>,
 
@@ -641,7 +641,7 @@ mod tests {
         assert_eq!(clock.current_widget_theme_for_test(), "nerv");
         assert_eq!(
             clock.current_theme_for_test().clock_style.fg,
-            Some(Color::Indexed(171))
+            Some(Color::Indexed(208))
         );
 
         app.on_key(KeyCode::Char('t'));
