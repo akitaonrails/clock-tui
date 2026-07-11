@@ -24,6 +24,8 @@ tclock-system-health --theme nerv
 
 When used as a `tclock` clock widget, `widget_themes` controls the clock-mode theme cycle. Press `Shift+T` in clock mode to cycle the configured themes; lowercase `t` still switches to Timer mode. For built-in app palettes (`default` and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also sets `TCLOCK_WIDGET_THEME` for every widget subprocess. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
 
+Use `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` to choose the initial app/widget theme without editing config. Explicit `--theme` wins over the environment variable.
+
 ```toml
 [clock]
 widget_themes = ["default", "nerv"]

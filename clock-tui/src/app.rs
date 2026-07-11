@@ -105,6 +105,7 @@ use crate::config::{Config, TimerConfig};
 const DEFAULT_CLOCK_SIZE: u16 = 1;
 const DEFAULT_TIMER_WORK_MINUTES: i64 = 25;
 const DEFAULT_TIMER_BREAK_MINUTES: i64 = 5;
+const WIDGET_THEME_ENV: &str = "TCLOCK_WIDGET_THEME";
 
 #[derive(clap::Parser, Default)]
 #[command(name = "tclock", about = "A clock app in terminal", long_about = None)]
@@ -119,6 +120,10 @@ pub struct App {
     /// Size of the clock, should be a positive integer (>=1).
     #[arg(short, long, value_parser = parse_size)]
     pub size: Option<u16>,
+
+    /// Initial clock/widget theme, for example "default" or "nerv". Falls back to TCLOCK_WIDGET_THEME, then config.
+    #[arg(long, value_parser = parse_theme_name)]
+    pub theme: Option<String>,
 
     #[arg(skip)]
     clock: Option<Clock>,
@@ -221,6 +226,13 @@ impl App {
                 timezone,
             } => {
                 let clock_config = config.as_ref().map(|c| &c.clock);
+                let widget_themes = resolve_widget_themes(
+                    self.theme.as_deref(),
+                    std::env::var(WIDGET_THEME_ENV).ok().as_deref(),
+                    clock_config
+                        .map(|c| c.widget_themes.clone())
+                        .unwrap_or_default(),
+                );
                 self.clock = Some(Clock::new(
                     size,
                     style,
@@ -229,9 +241,7 @@ impl App {
                     !no_seconds && clock_config.map(|c| c.show_seconds).unwrap_or(true),
                     timezone.or_else(|| clock_config.and_then(|c| c.timezone)),
                     clock_config.map(|c| c.widgets.clone()).unwrap_or_default(),
-                    clock_config
-                        .map(|c| c.widget_themes.clone())
-                        .unwrap_or_default(),
+                    widget_themes,
                 ));
             }
             Mode::Timer {
@@ -418,6 +428,38 @@ fn parse_size(s: &str) -> Result<u16, String> {
     }
 }
 
+fn parse_theme_name(value: &str) -> Result<String, String> {
+    let theme = value.trim();
+    if theme.is_empty() {
+        Err("theme must not be empty".to_string())
+    } else {
+        Ok(theme.to_string())
+    }
+}
+
+fn resolve_widget_themes(
+    cli_theme: Option<&str>,
+    env_theme: Option<&str>,
+    configured_themes: Vec<String>,
+) -> Vec<String> {
+    let requested = cli_theme
+        .or(env_theme)
+        .map(str::trim)
+        .filter(|theme| !theme.is_empty());
+    let Some(requested) = requested else {
+        return configured_themes;
+    };
+
+    let mut themes = Vec::with_capacity(configured_themes.len().max(1));
+    themes.push(requested.to_string());
+    for theme in configured_themes {
+        if !theme.trim().eq_ignore_ascii_case(requested) {
+            themes.push(theme);
+        }
+    }
+    themes
+}
+
 fn parse_color(s: &str) -> Result<Color, String> {
     let s = s.to_lowercase();
     match s.as_str() {
@@ -503,6 +545,7 @@ fn parse_timezone(s: &str) -> Result<Tz, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn parse_duration_accepts_supported_units() {
@@ -546,6 +589,14 @@ mod tests {
     }
 
     #[test]
+    fn app_accepts_theme_option() {
+        let app = App::try_parse_from(["tclock", "--theme", "nerv"]).unwrap();
+
+        assert_eq!(app.theme.as_deref(), Some("nerv"));
+        assert!(App::try_parse_from(["tclock", "--theme", ""]).is_err());
+    }
+
+    #[test]
     fn parse_datetime_accepts_dates_and_rejects_invalid_values() {
         assert!(parse_datetime("2026-01-01").is_ok());
         assert!(parse_datetime("not a date").is_err());
@@ -578,6 +629,7 @@ mod tests {
             }),
             color: None,
             size: None,
+            theme: None,
             clock: Some(clock),
             timer: None,
             stopwatch: None,
@@ -599,6 +651,34 @@ mod tests {
                 .expect("clock mode remains active")
                 .current_widget_theme_for_test(),
             "nerv"
+        );
+    }
+
+    #[test]
+    fn theme_precedence_reorders_widget_themes() {
+        assert_eq!(
+            resolve_widget_themes(None, None, vec!["default".to_string(), "nerv".to_string()]),
+            vec!["default", "nerv"]
+        );
+        assert_eq!(
+            resolve_widget_themes(
+                None,
+                Some("nerv"),
+                vec!["default".to_string(), "nerv".to_string()]
+            ),
+            vec!["nerv", "default"]
+        );
+        assert_eq!(
+            resolve_widget_themes(
+                Some("default"),
+                Some("nerv"),
+                vec!["default".to_string(), "nerv".to_string()]
+            ),
+            vec!["default", "nerv"]
+        );
+        assert_eq!(
+            resolve_widget_themes(Some("eva"), None, vec!["default".to_string()]),
+            vec!["eva", "default"]
         );
     }
 }

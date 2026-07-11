@@ -74,37 +74,44 @@ pub(crate) struct ClockTheme {
 impl ClockTheme {
     pub(crate) fn named(name: &str, base_style: Style) -> Self {
         match name.trim().to_ascii_lowercase().as_str() {
-            "nerv" => Self {
-                // Match the bundled tclock-system-health NERV palette:
-                // purple title, NERV orange labels, muted lavender base, EVA
-                // green accent.
-                clock_style: base_style
-                    .fg(Color::Indexed(171))
-                    .add_modifier(Modifier::BOLD),
-                text_style: base_style.fg(Color::Indexed(208)),
-                widget_style: base_style.fg(Color::Indexed(103)),
-                widget_title_style: base_style
-                    .fg(Color::Indexed(99))
-                    .add_modifier(Modifier::BOLD)
-                    .remove_modifier(Modifier::DIM),
-                widget_marker_style: base_style
-                    .fg(Color::Indexed(118))
-                    .add_modifier(Modifier::BOLD)
-                    .remove_modifier(Modifier::DIM),
-            },
-            _ => Self {
-                clock_style: base_style,
-                text_style: base_style,
-                widget_style: base_style,
-                widget_title_style: base_style
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::BOLD)
-                    .remove_modifier(Modifier::DIM),
-                widget_marker_style: base_style
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-                    .remove_modifier(Modifier::DIM),
-            },
+            "nerv" => Self::nerv(base_style),
+            _ => Self::default_theme(base_style),
+        }
+    }
+
+    fn default_theme(base_style: Style) -> Self {
+        Self {
+            clock_style: base_style,
+            text_style: base_style,
+            widget_style: base_style,
+            widget_title_style: base_style
+                .fg(Color::Gray)
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM),
+            widget_marker_style: base_style
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM),
+        }
+    }
+
+    fn nerv(base_style: Style) -> Self {
+        // Match the bundled tclock-system-health NERV palette: purple title,
+        // NERV orange labels, muted lavender base, EVA green accent.
+        Self {
+            clock_style: base_style
+                .fg(Color::Indexed(171))
+                .add_modifier(Modifier::BOLD),
+            text_style: base_style.fg(Color::Indexed(208)),
+            widget_style: base_style.fg(Color::Indexed(103)),
+            widget_title_style: base_style
+                .fg(Color::Indexed(99))
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM),
+            widget_marker_style: base_style
+                .fg(Color::Indexed(118))
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM),
         }
     }
 }
