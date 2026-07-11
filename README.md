@@ -2,7 +2,9 @@
 
 ![Clock mode with NERV theme and command widgets](./assets/screenshot-clock-widgets.png)
 
-Clock mode supports runtime themes; this screenshot shows the built-in `nerv` theme with command widgets. Press `Shift+T` to cycle `default` → `evangelion` → `nerv`.
+![Clock mode with Evangelion theme and command widgets](./assets/screenshot-clock-widgets-evangelion.png)
+
+Clock mode supports runtime themes; these screenshots show the built-in `nerv` and `evangelion` themes with command widgets. Press `Shift+T` to cycle `default` → `evangelion` → `nerv`.
 
 `tclock` is a terminal clock app with clock, timer, stopwatch, and countdown modes.
 
