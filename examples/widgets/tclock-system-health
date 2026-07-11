@@ -216,7 +216,7 @@ pair() {
 # armed btrfs-scrub@ timer, falling back to the first mount seen.
 btrfs_filesystems() {
   local src tgt dev label esc next
-  local -A first_mnt timer_mnt
+  local -A first_mnt timer_mnt stats_mnt
   local order=()
   command -v findmnt >/dev/null 2>&1 || return 0
   while read -r tgt src; do
@@ -231,12 +231,18 @@ btrfs_filesystems() {
       next=$(systemctl show "btrfs-scrub@$esc.timer" -p NextElapseUSecRealtime --value 2>/dev/null)
       [ -n "$next" ] && [ "$next" != "n/a" ] && timer_mnt[$dev]=$tgt
     fi
+    # device stats work from ANY mountpoint of the filesystem, but only if the
+    # mountpoint itself is accessible (e.g. /var/lib/docker is root-only while
+    # a sibling subvol mount of the same device is world-readable)
+    if [ -z "${stats_mnt[$dev]:-}" ] && btrfs device stats "$tgt" >/dev/null 2>&1; then
+      stats_mnt[$dev]=$tgt
+    fi
   done < <(findmnt -rn -t btrfs -o TARGET,SOURCE 2>/dev/null)
   for dev in ${order[@]+"${order[@]}"}; do
     tgt=${timer_mnt[$dev]:-${first_mnt[$dev]}}
     label=$(basename "$tgt"); [ "$tgt" = "/" ] && label=root
     esc=$(systemd-escape -p "$tgt" 2>/dev/null) || continue
-    printf '%s:%s:%s\n' "$tgt" "$label" "$esc"
+    printf '%s:%s:%s:%s\n' "$tgt" "$label" "$esc" "${stats_mnt[$dev]:-}"
   done
 }
 
@@ -416,8 +422,10 @@ btrfs_line() {
   local stats usage io_unknown=0 usage_seen=0
   fs_list=$(btrfs_filesystems)
   [ -n "$fs_list" ] || return 0   # no btrfs on this host: omit the row entirely
-  while IFS=: read -r mnt label esc; do
-    if stats=$(btrfs device stats "$mnt" 2>/dev/null); then
+  while IFS=: read -r mnt label esc smnt; do
+    # stats via any accessible mountpoint of the device (smnt), not necessarily
+    # the labeled one (which may be root-only, e.g. /var/lib/docker)
+    if [ -n "$smnt" ] && stats=$(btrfs device stats "$smnt" 2>/dev/null); then
       e=$(awk '{s+=$NF} END{print s+0}' <<<"$stats")
       errs=$((errs + e))
     else
@@ -447,8 +455,9 @@ btrfs_line() {
   # allocation pressure: balance is only needed when unallocated device space
   # runs out while chunks sit half-empty — monitor instead of scheduling
   local alloc="${G}ok${N}" worst_pct=100 worst_fs="" pct
-  while IFS=: read -r mnt label esc; do
-    if ! usage=$(btrfs filesystem usage -b "$mnt" 2>/dev/null); then
+  while IFS=: read -r mnt label esc smnt; do
+    [ -n "$smnt" ] || smnt=$mnt
+    if ! usage=$(btrfs filesystem usage -b "$smnt" 2>/dev/null); then
       continue
     fi
     usage_seen=1
