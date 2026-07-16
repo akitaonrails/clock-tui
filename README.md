@@ -166,7 +166,7 @@ The clock automatically sizes itself into the top area when widgets are configur
 
 Widgets with `position = "bottom"` are placed in a full-width band beneath the widget row instead, stacked in config order and each sized to exactly fit its output. The widget row keeps a minimum height when both are present, and a bottom widget that cannot get at least 3 rows is hidden rather than squeezed. Bottom widgets don't count against the per-row widget limits, so a status strip can coexist with a full row of columns.
 
-When a widget has more output than fits on screen, scroll it with the mouse wheel over that widget. `Home` and `End` jump the active widget to the top or bottom. In clock mode, press `Shift+T` to cycle the configured clock theme; lowercase `t` still switches to Timer mode.
+When a widget has more output than fits on screen, scroll it with the mouse wheel over that widget. `Home` and `End` jump the active widget to the top or bottom. In clock mode, press `Shift+T` to cycle the configured clock theme; lowercase `t` still switches to Timer mode. Press `g` to cycle widget groups (see [Widget groups](#widget-groups)).
 
 Each widget supports:
 
@@ -175,6 +175,7 @@ Each widget supports:
 - `refresh_secs`: refresh interval, default `900`
 - `timeout_secs`: command timeout, default `30`
 - `position`: `"auto"` (default, widget row) or `"bottom"` (full-width band below the row, sized to content)
+- `group`: optional group name; widgets in the same group are shown together and swapped as a set with `g` (see [Widget groups](#widget-groups))
 
 `widget_themes` controls the clock-mode theme cycle. For built-in app palettes (`default`, `evangelion`, and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also injects the current theme name into every widget subprocess as `TCLOCK_WIDGET_THEME`. `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` chooses the initial theme and keeps the configured cycle order after it. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
 
@@ -184,6 +185,43 @@ widget_themes = ["default", "evangelion", "nerv"]
 ```
 
 An empty or single-item list makes `Shift+T` harmless. For coherent app + bundled-widget theming, keep built-in names such as `default`, `evangelion`, and `nerv` unless you also add the palette to both `tclock` and `tclock-system-health`.
+
+### Widget groups
+
+Screen space is finite, and the widget row only fits 2–6 columns depending on terminal width. Groups let you configure more widgets than fit at once and swap between them: give widgets a `group` name, and press `g` to cycle to the next group.
+
+- A widget with **no** `group` is always on screen, in every group.
+- A widget **with** a `group` is only on screen while that group is active.
+- Groups cycle in the order they first appear in the config, so **the first grouped widget decides which group is shown at startup**.
+- Switching groups keeps each widget's last output, so returning to a group is instant instead of showing `Loading...`. Hidden widgets don't refresh, so an expensive command costs nothing while it's off screen.
+- With fewer than two groups, `g` does nothing.
+
+```toml
+[clock]
+show_date = true
+
+# Always visible — has no group, so it survives every `g` press.
+[[clock.widgets]]
+title = "Google Calendar"
+command = "google-calendar-tui"
+refresh_secs = 3600
+
+# Group "weather" appears first, so it's the group shown at startup.
+[[clock.widgets]]
+title = "Weather"
+group = "weather"
+command = ["sh", "-c", "curl -s 'https://wttr.in/Florianopolis?0&Q&M'"]
+refresh_secs = 1800
+
+# Press `g` to swap the weather column out for this one.
+[[clock.widgets]]
+title = "GitHub pending"
+group = "github"
+command = "ghpending"
+refresh_secs = 900
+```
+
+To show a different region, change the location in the `wttr.in` URL — it accepts a city (`wttr.in/Curitiba`), a city with country when the name is ambiguous (`wttr.in/Porto+Alegre,BR`), an airport code (`wttr.in/GRU`), or `~` for a landmark (`wttr.in/~Cristo+Redentor`). Use `+` for spaces and drop accents. The query flags: `0` prints today only (keeping the widget short), `Q` hides the location header, `M` reports wind in m/s. Don't add `T` — it strips the ANSI colors that the widget would otherwise render. Leaving the location out entirely (`wttr.in/?0`) geolocates by IP, which behind a VPN reports the VPN's exit city.
 
 ### Bundled example: system-health widget
 
