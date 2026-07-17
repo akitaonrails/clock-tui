@@ -232,8 +232,13 @@ impl ClockWidgets {
         }
 
         let theme = self.current_theme().to_string();
+        let current_group = self.current_group().map(str::to_string);
         for (index, widget) in self.widgets.iter_mut().enumerate() {
-            if !widget.visible || widget.running || now < widget.next_run {
+            let in_active_group = match widget.group.as_deref() {
+                None => true,
+                Some(group) => current_group.as_deref() == Some(group),
+            };
+            if !widget.visible || !in_active_group || widget.running || now < widget.next_run {
                 continue;
             }
 
@@ -1317,6 +1322,27 @@ mod tests {
         // Unlike a theme cycle, switching groups must not reset output to
         // "Loading..." — returning to a group should be instant.
         assert_eq!(widgets.widgets[0].output, "22C sunny");
+    }
+
+    #[test]
+    fn cycling_group_before_render_does_not_refresh_previous_group() {
+        let mut widgets = ClockWidgets::new(
+            vec![
+                grouped_widget_config("weather", Some("weather")),
+                grouped_widget_config("github", Some("github")),
+            ],
+            default_themes(),
+        );
+
+        widgets.widgets[0].visible = true;
+        assert_eq!(widgets.current_group_for_test(), Some("weather"));
+
+        widgets.cycle_group();
+        widgets.tick();
+
+        assert_eq!(widgets.current_group_for_test(), Some("github"));
+        assert!(!widgets.widgets[0].running);
+        assert!(!widgets.widgets[1].running);
     }
 
     #[test]
