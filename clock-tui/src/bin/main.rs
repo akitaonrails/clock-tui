@@ -83,7 +83,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         auto_quit: false,
                         execute: vec![],
                     }),
-                    KeyCode::Char('T') | KeyCode::Home | KeyCode::End => app.on_key(key.code),
+                    KeyCode::Char('T') | KeyCode::Char('g') | KeyCode::Home | KeyCode::End => {
+                        app.on_key(key.code)
+                    }
                     _ => {}
                 },
                 Event::Mouse(mouse) => match mouse.kind {

@@ -324,6 +324,7 @@ impl App {
         if let Some(w) = self.clock.as_mut() {
             match key {
                 KeyCode::Char('T') => w.cycle_widget_theme(),
+                KeyCode::Char('g') => w.cycle_widget_group(),
                 KeyCode::Home => w.scroll_active_widget_to_top(),
                 KeyCode::End => w.scroll_active_widget_to_bottom(),
                 _ => {}

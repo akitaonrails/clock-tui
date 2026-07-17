@@ -98,6 +98,12 @@ pub struct ClockWidgetConfig {
     pub timeout_secs: u64,
     #[serde(default)]
     pub position: WidgetPosition,
+    /// Optional group name. Widgets sharing a group are shown together, and
+    /// only one group is on screen at a time (cycled with `g`). Widgets with no
+    /// group are always shown. Group order follows first appearance in config,
+    /// so the first grouped widget's group is the one shown at startup.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

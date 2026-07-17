@@ -65,6 +65,10 @@ impl Clock {
         self.widgets.cycle_theme();
     }
 
+    pub(crate) fn cycle_widget_group(&mut self) {
+        self.widgets.cycle_group();
+    }
+
     pub(crate) fn current_theme(&self) -> ClockTheme {
         self.widgets.current_clock_theme(self.style)
     }

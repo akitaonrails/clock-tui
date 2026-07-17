@@ -60,6 +60,8 @@ pub(crate) struct ClockWidgets {
     active_widget: Option<usize>,
     themes: Vec<String>,
     theme_index: usize,
+    groups: Vec<String>,
+    group_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -143,6 +145,7 @@ struct ClockWidget {
     refresh: Duration,
     timeout: Duration,
     position: WidgetPosition,
+    group: Option<String>,
     output: String,
     running: bool,
     visible: bool,
@@ -163,6 +166,7 @@ impl ClockWidgets {
         let now = Instant::now();
         let cancel = Arc::new(AtomicBool::new(false));
         let themes = normalize_themes(themes);
+        let groups = collect_groups(&configs);
         let widgets = configs
             .into_iter()
             .map(|config| ClockWidget {
@@ -171,6 +175,7 @@ impl ClockWidgets {
                 refresh: duration_or_default(config.refresh_secs, DEFAULT_REFRESH),
                 timeout: duration_or_default(config.timeout_secs, DEFAULT_TIMEOUT),
                 position: config.position,
+                group: normalize_group(config.group.as_deref()),
                 output: "Loading...".to_string(),
                 running: false,
                 visible: false,
@@ -190,6 +195,8 @@ impl ClockWidgets {
             active_widget: None,
             themes,
             theme_index: 0,
+            groups,
+            group_index: 0,
         }
     }
 
@@ -225,8 +232,13 @@ impl ClockWidgets {
         }
 
         let theme = self.current_theme().to_string();
+        let current_group = self.current_group().map(str::to_string);
         for (index, widget) in self.widgets.iter_mut().enumerate() {
-            if !widget.visible || widget.running || now < widget.next_run {
+            let in_active_group = match widget.group.as_deref() {
+                None => true,
+                Some(group) => current_group.as_deref() == Some(group),
+            };
+            if !widget.visible || !in_active_group || widget.running || now < widget.next_run {
                 continue;
             }
 
@@ -264,6 +276,36 @@ impl ClockWidgets {
         }
     }
 
+    /// Switch to the next widget group. Widgets outside the new group stop
+    /// refreshing (they are no longer visible) but keep their last output, so
+    /// coming back to a group is instant instead of showing "Loading...".
+    pub(crate) fn cycle_group(&mut self) {
+        if self.groups.len() <= 1 {
+            return;
+        }
+
+        self.group_index = (self.group_index + 1) % self.groups.len();
+        self.active_widget = None;
+    }
+
+    fn current_group(&self) -> Option<&str> {
+        self.groups.get(self.group_index).map(String::as_str)
+    }
+
+    /// A widget is eligible for layout when it has no group (always shown) or
+    /// its group is the active one.
+    fn in_active_group(&self, widget: &ClockWidget) -> bool {
+        match widget.group.as_deref() {
+            None => true,
+            Some(group) => Some(group) == self.current_group(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_group_for_test(&self) -> Option<&str> {
+        self.current_group()
+    }
+
     fn current_theme(&self) -> &str {
         self.themes
             .get(self.theme_index)
@@ -299,14 +341,18 @@ impl ClockWidgets {
             .widgets
             .iter()
             .enumerate()
-            .filter(|(_, widget)| widget.position == WidgetPosition::Auto)
+            .filter(|(_, widget)| {
+                widget.position == WidgetPosition::Auto && self.in_active_group(widget)
+            })
             .map(|(index, _)| index)
             .collect();
         let bottom_indices: Vec<usize> = self
             .widgets
             .iter()
             .enumerate()
-            .filter(|(_, widget)| widget.position == WidgetPosition::Bottom)
+            .filter(|(_, widget)| {
+                widget.position == WidgetPosition::Bottom && self.in_active_group(widget)
+            })
             .map(|(index, _)| index)
             .collect();
 
@@ -521,6 +567,28 @@ fn normalize_themes(themes: Vec<String>) -> Vec<String> {
         .map(|theme| theme.trim().to_string())
         .filter(|theme| !theme.is_empty())
         .collect()
+}
+
+/// Trim a configured group name, treating blank as "no group".
+fn normalize_group(group: Option<&str>) -> Option<String> {
+    group
+        .map(str::trim)
+        .filter(|group| !group.is_empty())
+        .map(str::to_string)
+}
+
+/// Group cycle order is the order groups first appear in the config, so the
+/// first grouped widget decides which group is shown at startup.
+fn collect_groups(configs: &[ClockWidgetConfig]) -> Vec<String> {
+    let mut groups: Vec<String> = Vec::new();
+    for config in configs {
+        if let Some(group) = normalize_group(config.group.as_deref()) {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+    }
+    groups
 }
 
 fn run_command(
@@ -973,6 +1041,7 @@ mod tests {
                     refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
                     timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
                     position: WidgetPosition::Auto,
+                    group: None,
                 },
                 ClockWidgetConfig {
                     title: None,
@@ -980,6 +1049,7 @@ mod tests {
                     refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
                     timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
                     position: WidgetPosition::Auto,
+                    group: None,
                 },
                 ClockWidgetConfig {
                     title: None,
@@ -987,6 +1057,7 @@ mod tests {
                     refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
                     timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
                     position: WidgetPosition::Auto,
+                    group: None,
                 },
             ],
             default_themes(),
@@ -1186,6 +1257,125 @@ mod tests {
         assert!(height <= area.height);
     }
 
+    #[test]
+    fn groups_cycle_in_first_appearance_order() {
+        let mut widgets = ClockWidgets::new(
+            vec![
+                grouped_widget_config("weather", Some("weather")),
+                grouped_widget_config("github", Some("github")),
+                grouped_widget_config("forecast", Some("weather")),
+            ],
+            default_themes(),
+        );
+
+        // First group in config order is the one shown at startup.
+        assert_eq!(widgets.current_group_for_test(), Some("weather"));
+
+        widgets.cycle_group();
+        assert_eq!(widgets.current_group_for_test(), Some("github"));
+
+        // Only two distinct groups, so it wraps back rather than visiting
+        // "weather" twice for the two weather widgets.
+        widgets.cycle_group();
+        assert_eq!(widgets.current_group_for_test(), Some("weather"));
+    }
+
+    #[test]
+    fn render_shows_active_group_and_always_shows_ungrouped() {
+        let mut widgets = ClockWidgets::new(
+            vec![
+                grouped_widget_config("weather", Some("weather")),
+                grouped_widget_config("github", Some("github")),
+                grouped_widget_config("calendar", None),
+            ],
+            default_themes(),
+        );
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buffer = Buffer::empty(area);
+
+        widgets.render(area, area, &mut buffer, default_clock_theme());
+        assert!(widgets.widgets[0].visible, "active group is rendered");
+        assert!(!widgets.widgets[1].visible, "inactive group is hidden");
+        assert!(widgets.widgets[2].visible, "ungrouped is always rendered");
+
+        widgets.cycle_group();
+        widgets.render(area, area, &mut buffer, default_clock_theme());
+        assert!(!widgets.widgets[0].visible);
+        assert!(widgets.widgets[1].visible);
+        assert!(widgets.widgets[2].visible);
+    }
+
+    #[test]
+    fn hidden_group_keeps_its_output_across_a_cycle() {
+        let mut widgets = ClockWidgets::new(
+            vec![
+                grouped_widget_config("weather", Some("weather")),
+                grouped_widget_config("github", Some("github")),
+            ],
+            default_themes(),
+        );
+        widgets.widgets[0].output = "22C sunny".to_string();
+
+        widgets.cycle_group();
+        widgets.cycle_group();
+
+        // Unlike a theme cycle, switching groups must not reset output to
+        // "Loading..." — returning to a group should be instant.
+        assert_eq!(widgets.widgets[0].output, "22C sunny");
+    }
+
+    #[test]
+    fn cycling_group_before_render_does_not_refresh_previous_group() {
+        let mut widgets = ClockWidgets::new(
+            vec![
+                grouped_widget_config("weather", Some("weather")),
+                grouped_widget_config("github", Some("github")),
+            ],
+            default_themes(),
+        );
+
+        widgets.widgets[0].visible = true;
+        assert_eq!(widgets.current_group_for_test(), Some("weather"));
+
+        widgets.cycle_group();
+        widgets.tick();
+
+        assert_eq!(widgets.current_group_for_test(), Some("github"));
+        assert!(!widgets.widgets[0].running);
+        assert!(!widgets.widgets[1].running);
+    }
+
+    #[test]
+    fn cycling_is_inert_without_at_least_two_groups() {
+        let mut widgets = ClockWidgets::new(
+            vec![widget_config("a"), widget_config("b")],
+            default_themes(),
+        );
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buffer = Buffer::empty(area);
+
+        widgets.cycle_group();
+
+        assert_eq!(widgets.current_group_for_test(), None);
+        widgets.render(area, area, &mut buffer, default_clock_theme());
+        assert!(widgets.widgets.iter().all(|widget| widget.visible));
+    }
+
+    #[test]
+    fn blank_group_is_treated_as_ungrouped() {
+        let widgets = ClockWidgets::new(
+            vec![
+                grouped_widget_config("spaces", Some("   ")),
+                grouped_widget_config("real", Some("  github  ")),
+            ],
+            default_themes(),
+        );
+
+        assert_eq!(widgets.widgets[0].group, None);
+        assert_eq!(widgets.widgets[1].group.as_deref(), Some("github"));
+        assert_eq!(widgets.groups, vec!["github".to_string()]);
+    }
+
     fn widget_config(title: &str) -> ClockWidgetConfig {
         ClockWidgetConfig {
             title: Some(title.to_string()),
@@ -1193,6 +1383,14 @@ mod tests {
             refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
             timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
             position: WidgetPosition::Auto,
+            group: None,
+        }
+    }
+
+    fn grouped_widget_config(title: &str, group: Option<&str>) -> ClockWidgetConfig {
+        ClockWidgetConfig {
+            group: group.map(str::to_string),
+            ..widget_config(title)
         }
     }
 
