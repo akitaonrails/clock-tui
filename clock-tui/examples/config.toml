@@ -1,5 +1,7 @@
 # Default configuration file for tclock
-# Copy this file to ~/.config/tclock/config.toml to enable configuration
+# Copy this file to ~/.config/tclock/config.toml to enable configuration.
+# tclock also checks $XDG_CONFIG_HOME/tclock/config.toml and, as a fallback,
+# the OS-native config dir (e.g. ~/Library/Application Support/tclock on macOS).
 
 # Global default settings
 [default]

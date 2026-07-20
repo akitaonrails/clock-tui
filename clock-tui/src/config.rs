@@ -218,13 +218,52 @@ fn default_widget_themes() -> Vec<String> {
 }
 
 impl Config {
+    /// Ordered list of locations to look for the config file, highest priority
+    /// first. `$XDG_CONFIG_HOME` and `~/.config` are honored on every platform
+    /// (so the same `~/.config/tclock/config.toml` works on macOS and Linux),
+    /// with the OS-native directory (`~/Library/Application Support` on macOS)
+    /// kept as a fallback for existing setups. Duplicates are removed so the
+    /// same file is never read twice.
+    pub fn config_paths() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            if !xdg.is_empty() {
+                dirs.push(PathBuf::from(xdg));
+            }
+        }
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".config"));
+        }
+        if let Some(native) = dirs::config_dir() {
+            dirs.push(native);
+        }
+
+        let mut paths = Vec::new();
+        for dir in dirs {
+            let path = dir.join("tclock").join("config.toml");
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        paths
+    }
+
+    /// The config path tclock reads: the first candidate that exists, or the
+    /// highest-priority candidate as a default when none exist yet.
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|dir| dir.join("tclock").join("config.toml"))
+        let paths = Self::config_paths();
+        paths
+            .iter()
+            .find(|path| path.exists())
+            .cloned()
+            .or_else(|| paths.into_iter().next())
     }
 
     pub fn load() -> Option<Self> {
-        let config_path = Self::config_path()?;
-        Self::load_from_path(config_path)
+        Self::config_paths()
+            .into_iter()
+            .find(|path| path.exists())
+            .and_then(Self::load_from_path)
     }
 
     pub fn load_from_path(path: impl AsRef<Path>) -> Option<Self> {
@@ -318,5 +357,34 @@ mod tests {
         assert_eq!(widget.command, vec!["sh", "-c", "printf ok"]);
         assert_eq!(widget.refresh_secs, 5);
         assert_eq!(widget.timeout_secs, 2);
+    }
+
+    #[test]
+    fn config_paths_are_unique_and_target_tclock_config() {
+        let paths = Config::config_paths();
+        assert!(!paths.is_empty());
+        for path in &paths {
+            assert!(path.ends_with("tclock/config.toml"), "unexpected {path:?}");
+        }
+        let mut deduped = paths.clone();
+        deduped.dedup();
+        assert_eq!(paths, deduped, "config_paths should not contain duplicates");
+    }
+
+    #[test]
+    fn config_paths_prefer_xdg_config_home() {
+        // Safe because tests in this module do not otherwise read this var.
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-tclock-test");
+        let paths = Config::config_paths();
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+
+        assert_eq!(
+            paths.first().map(PathBuf::as_path),
+            Some(Path::new("/tmp/xdg-tclock-test/tclock/config.toml")),
+        );
     }
 }
