@@ -218,23 +218,19 @@ fn default_widget_themes() -> Vec<String> {
 }
 
 impl Config {
-    /// Ordered list of locations to look for the config file, highest priority
-    /// first. `$XDG_CONFIG_HOME` and `~/.config` are honored on every platform
-    /// (so the same `~/.config/tclock/config.toml` works on macOS and Linux),
-    /// with the OS-native directory (`~/Library/Application Support` on macOS)
-    /// kept as a fallback for existing setups. Duplicates are removed so the
-    /// same file is never read twice.
-    pub fn config_paths() -> Vec<PathBuf> {
+    fn config_paths_from_dirs(
+        xdg_config_home: Option<PathBuf>,
+        home_dir: Option<PathBuf>,
+        native_config_dir: Option<PathBuf>,
+    ) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
-        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            if !xdg.is_empty() {
-                dirs.push(PathBuf::from(xdg));
-            }
+        if let Some(xdg) = xdg_config_home.filter(|path| path.is_absolute()) {
+            dirs.push(xdg);
         }
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = home_dir {
             dirs.push(home.join(".config"));
         }
-        if let Some(native) = dirs::config_dir() {
+        if let Some(native) = native_config_dir {
             dirs.push(native);
         }
 
@@ -246,6 +242,21 @@ impl Config {
             }
         }
         paths
+    }
+
+    /// Ordered list of locations to look for the config file, highest priority
+    /// first. An absolute `$XDG_CONFIG_HOME` and `~/.config` are honored on
+    /// every platform (so the same `~/.config/tclock/config.toml` works on
+    /// macOS and Linux), with the OS-native directory
+    /// (`~/Library/Application Support` on macOS) kept as a fallback for
+    /// existing setups. Duplicates are removed so the same file is never read
+    /// twice.
+    pub fn config_paths() -> Vec<PathBuf> {
+        Self::config_paths_from_dirs(
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            dirs::home_dir(),
+            dirs::config_dir(),
+        )
     }
 
     /// The config path tclock reads: the first candidate that exists, or the
@@ -360,31 +371,42 @@ mod tests {
     }
 
     #[test]
-    fn config_paths_are_unique_and_target_tclock_config() {
-        let paths = Config::config_paths();
-        assert!(!paths.is_empty());
-        for path in &paths {
-            assert!(path.ends_with("tclock/config.toml"), "unexpected {path:?}");
-        }
-        let mut deduped = paths.clone();
-        deduped.dedup();
-        assert_eq!(paths, deduped, "config_paths should not contain duplicates");
+    fn config_paths_prefer_absolute_xdg_and_remove_duplicates() {
+        let root = std::env::current_dir().unwrap();
+        let xdg = root.join("xdg");
+        let home = root.join("home");
+        let paths = Config::config_paths_from_dirs(
+            Some(xdg.clone()),
+            Some(home.clone()),
+            Some(xdg.clone()),
+        );
+
+        assert_eq!(
+            paths,
+            vec![
+                xdg.join("tclock").join("config.toml"),
+                home.join(".config").join("tclock").join("config.toml"),
+            ]
+        );
     }
 
     #[test]
-    fn config_paths_prefer_xdg_config_home() {
-        // Safe because tests in this module do not otherwise read this var.
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-tclock-test");
-        let paths = Config::config_paths();
-        match previous {
-            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
+    fn config_paths_ignore_relative_xdg_config_home() {
+        let root = std::env::current_dir().unwrap();
+        let home = root.join("home");
+        let native = root.join("native");
+        let paths = Config::config_paths_from_dirs(
+            Some(PathBuf::from("relative")),
+            Some(home.clone()),
+            Some(native.clone()),
+        );
 
         assert_eq!(
-            paths.first().map(PathBuf::as_path),
-            Some(Path::new("/tmp/xdg-tclock-test/tclock/config.toml")),
+            paths,
+            vec![
+                home.join(".config").join("tclock").join("config.toml"),
+                native.join("tclock").join("config.toml"),
+            ]
         );
     }
 }

@@ -22,7 +22,7 @@
 - `clock-tui/Cargo.toml` has cargo-binstall metadata pointing at GitHub Release tarballs; if artifact names change, update that metadata too.
 
 ## Runtime gotchas
-- Config is loaded from `dirs::config_dir()/tclock/config.toml` (XDG: `$XDG_CONFIG_HOME/tclock/config.toml`, usually `~/.config/tclock/config.toml`); missing config is ignored, and invalid TOML prints an error then falls back to defaults.
+- Config is loaded from the first existing candidate in this order: absolute `$XDG_CONFIG_HOME/tclock/config.toml`, `~/.config/tclock/config.toml`, then `dirs::config_dir()/tclock/config.toml` as the OS-native fallback. Duplicate paths are removed; missing config is ignored, and invalid TOML prints an error then falls back to defaults.
 - The main key bindings are in `clock-tui/src/bin/main.rs`: `q` exits, space pauses/resumes supported modes, and `c`/`w`/`t` switch to clock/stopwatch/timer. There is no countdown switch key in the main loop. Clock-mode-only keys (`Shift+T` theme cycle, `g` widget-group cycle, `Home`/`End` scroll) are forwarded to `App::on_key`, which dispatches them in `clock-tui/src/app.rs`.
 - Clock widgets are config-only under `[[clock.widgets]]`, clock-mode only, implemented in `clock-tui/src/app/modes/clock_widget.rs`; widget commands run from `App::tick()` state, not from `Widget::render()`.
 - An optional `group` on a widget makes it part of a set cycled with `g`; ungrouped widgets are always visible. Group membership is filtered in `ClockWidgets::render`, which is what sets `visible`, and `tick()` skips non-visible widgets — so a hidden group costs no subprocesses.
