@@ -119,17 +119,17 @@ tclock countdown --time 2026-01-01 --title 'New Year 2026'
 
 ## Configuration
 
-`tclock` reads config from the XDG config path:
+`tclock` reads the first config file it finds in this order:
 
 ```text
-$XDG_CONFIG_HOME/tclock/config.toml
-```
-
-That is usually:
-
-```text
+$XDG_CONFIG_HOME/tclock/config.toml  # when XDG_CONFIG_HOME is absolute
 ~/.config/tclock/config.toml
+<OS-native config dir>/tclock/config.toml
 ```
+
+The OS-native fallback preserves existing setups, such as
+`~/Library/Application Support/tclock/config.toml` on macOS. Duplicate paths
+are checked only once.
 
 Missing config is ignored. Invalid TOML prints an error and falls back to defaults.
 

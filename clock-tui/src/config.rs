@@ -218,13 +218,63 @@ fn default_widget_themes() -> Vec<String> {
 }
 
 impl Config {
+    fn config_paths_from_dirs(
+        xdg_config_home: Option<PathBuf>,
+        home_dir: Option<PathBuf>,
+        native_config_dir: Option<PathBuf>,
+    ) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(xdg) = xdg_config_home.filter(|path| path.is_absolute()) {
+            dirs.push(xdg);
+        }
+        if let Some(home) = home_dir {
+            dirs.push(home.join(".config"));
+        }
+        if let Some(native) = native_config_dir {
+            dirs.push(native);
+        }
+
+        let mut paths = Vec::new();
+        for dir in dirs {
+            let path = dir.join("tclock").join("config.toml");
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        paths
+    }
+
+    /// Ordered list of locations to look for the config file, highest priority
+    /// first. An absolute `$XDG_CONFIG_HOME` and `~/.config` are honored on
+    /// every platform (so the same `~/.config/tclock/config.toml` works on
+    /// macOS and Linux), with the OS-native directory
+    /// (`~/Library/Application Support` on macOS) kept as a fallback for
+    /// existing setups. Duplicates are removed so the same file is never read
+    /// twice.
+    pub fn config_paths() -> Vec<PathBuf> {
+        Self::config_paths_from_dirs(
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            dirs::home_dir(),
+            dirs::config_dir(),
+        )
+    }
+
+    /// The config path tclock reads: the first candidate that exists, or the
+    /// highest-priority candidate as a default when none exist yet.
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|dir| dir.join("tclock").join("config.toml"))
+        let paths = Self::config_paths();
+        paths
+            .iter()
+            .find(|path| path.exists())
+            .cloned()
+            .or_else(|| paths.into_iter().next())
     }
 
     pub fn load() -> Option<Self> {
-        let config_path = Self::config_path()?;
-        Self::load_from_path(config_path)
+        Self::config_paths()
+            .into_iter()
+            .find(|path| path.exists())
+            .and_then(Self::load_from_path)
     }
 
     pub fn load_from_path(path: impl AsRef<Path>) -> Option<Self> {
@@ -318,5 +368,45 @@ mod tests {
         assert_eq!(widget.command, vec!["sh", "-c", "printf ok"]);
         assert_eq!(widget.refresh_secs, 5);
         assert_eq!(widget.timeout_secs, 2);
+    }
+
+    #[test]
+    fn config_paths_prefer_absolute_xdg_and_remove_duplicates() {
+        let root = std::env::current_dir().unwrap();
+        let xdg = root.join("xdg");
+        let home = root.join("home");
+        let paths = Config::config_paths_from_dirs(
+            Some(xdg.clone()),
+            Some(home.clone()),
+            Some(xdg.clone()),
+        );
+
+        assert_eq!(
+            paths,
+            vec![
+                xdg.join("tclock").join("config.toml"),
+                home.join(".config").join("tclock").join("config.toml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn config_paths_ignore_relative_xdg_config_home() {
+        let root = std::env::current_dir().unwrap();
+        let home = root.join("home");
+        let native = root.join("native");
+        let paths = Config::config_paths_from_dirs(
+            Some(PathBuf::from("relative")),
+            Some(home.clone()),
+            Some(native.clone()),
+        );
+
+        assert_eq!(
+            paths,
+            vec![
+                home.join(".config").join("tclock").join("config.toml"),
+                native.join("tclock").join("config.toml"),
+            ]
+        );
     }
 }
