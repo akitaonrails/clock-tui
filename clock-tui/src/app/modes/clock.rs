@@ -19,6 +19,7 @@ pub(crate) struct Clock {
     pub show_millis: bool,
     pub show_secs: bool,
     pub timezone: Option<Tz>,
+    widgets_visible: bool,
     widgets: ClockWidgets,
 }
 
@@ -41,6 +42,7 @@ impl Clock {
             show_millis,
             show_secs,
             timezone,
+            widgets_visible: true,
             widgets: ClockWidgets::new(widgets, widget_themes),
         }
     }
@@ -51,6 +53,10 @@ impl Clock {
 
     pub(crate) fn scroll_widget_at(&mut self, column: u16, row: u16, delta: i16) {
         self.widgets.scroll_at(column, row, delta);
+    }
+
+    pub(crate) fn scroll_widget_popup(&mut self, delta: i16) {
+        self.widgets.scroll_popup(delta);
     }
 
     pub(crate) fn scroll_active_widget_to_top(&mut self) {
@@ -69,6 +75,25 @@ impl Clock {
         self.widgets.cycle_group();
     }
 
+    pub(crate) fn toggle_widgets(&mut self) {
+        self.widgets_visible = !self.widgets_visible;
+        if !self.widgets_visible {
+            self.widgets.hide_all();
+        }
+    }
+
+    pub(crate) fn open_widget_popup_action(&mut self, key: char) -> bool {
+        self.widgets.open_popup_action(key)
+    }
+
+    pub(crate) fn close_widget_popup(&mut self) {
+        self.widgets.close_popup();
+    }
+
+    pub(crate) fn has_widget_popup_open(&self) -> bool {
+        self.widgets.has_popup_open()
+    }
+
     pub(crate) fn current_theme(&self) -> ClockTheme {
         self.widgets.current_clock_theme(self.style)
     }
@@ -81,6 +106,11 @@ impl Clock {
     #[cfg(test)]
     pub(crate) fn current_theme_for_test(&self) -> ClockTheme {
         self.current_theme()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn widgets_visible_for_test(&self) -> bool {
+        self.widgets_visible
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -103,14 +133,15 @@ impl Clock {
             None
         };
 
-        if self.widgets.is_empty() {
+        if self.widgets.is_empty() || !self.widgets_visible {
             self.render_clock(area, buf, time_str, header, self.size);
         } else {
             let layout = clock_widgets_layout(area, time_str.chars().count(), header.is_some());
 
             self.render_clock(layout.clock_area, buf, time_str, header, layout.clock_size);
-            self.widgets
-                .render(layout.widgets_area, area, buf, self.current_theme());
+            let theme = self.current_theme();
+            self.widgets.render(layout.widgets_area, area, buf, theme);
+            self.widgets.render_popup(area, buf, theme);
         }
     }
 }

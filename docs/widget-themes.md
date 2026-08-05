@@ -62,7 +62,14 @@ title = ""
 command = "my-system-health"
 refresh_secs = 300
 position = "bottom"
+
+[[clock.widgets.popup_actions]]
+key = "d"
+label = "details"
+args = ["--details"]
 ```
+
+The popup action is theme-aware too: press `d` for failed-unit and timer-job details, then `Esc` to close it.
 
 ## Built-in themes
 

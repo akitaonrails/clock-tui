@@ -166,7 +166,7 @@ The clock automatically sizes itself into the top area when widgets are configur
 
 Widgets with `position = "bottom"` are placed in a full-width band beneath the widget row instead, stacked in config order and each sized to exactly fit its output. The widget row keeps a minimum height when both are present, and a bottom widget that cannot get at least 3 rows is hidden rather than squeezed. Bottom widgets don't count against the per-row widget limits, so a status strip can coexist with a full row of columns.
 
-When a widget has more output than fits on screen, scroll it with the mouse wheel over that widget. `Home` and `End` jump the active widget to the top or bottom. In clock mode, press `Shift+T` to cycle the configured clock theme; lowercase `t` still switches to Timer mode. Press `g` to cycle widget groups (see [Widget groups](#widget-groups)).
+When a widget has more output than fits on screen, scroll it with the mouse wheel over that widget. `Home` and `End` jump the active widget to the top or bottom. In clock mode, press `Shift+T` to cycle the configured clock theme; lowercase `t` still switches to Timer mode. Press `g` to cycle widget groups (see [Widget groups](#widget-groups)). Press `z` to toggle a clock-only layout that hides every widget and centers the clock in the full terminal; press `z` again to restore the previous widget/group layout. Hidden widgets do not refresh. Widgets can also contribute key-bound popup actions.
 
 Each widget supports:
 
@@ -176,6 +176,7 @@ Each widget supports:
 - `timeout_secs`: command timeout, default `30`
 - `position`: `"auto"` (default, widget row) or `"bottom"` (full-width band below the row, sized to content)
 - `group`: optional group name; widgets in the same group are shown together and swapped as a set with `g` (see [Widget groups](#widget-groups))
+- `popup_actions`: optional key bindings that run a command and show its output over the clock
 
 `widget_themes` controls the clock-mode theme cycle. For built-in app palettes (`default`, `evangelion`, and `nerv`), the app themes the clock digits, date/header text, and widget base/chrome styles itself, and also injects the current theme name into every widget subprocess as `TCLOCK_WIDGET_THEME`. `tclock --theme nerv` or `TCLOCK_WIDGET_THEME=nerv tclock` chooses the initial theme and keeps the configured cycle order after it. Other names are still passed to widget commands, but the app UI falls back to default styling unless that palette is added to `tclock` too. Theme names are a contract between your config and the widget commands: a command must understand the name it receives if it wants to match its internal ANSI palette.
 
@@ -185,6 +186,27 @@ widget_themes = ["default", "evangelion", "nerv"]
 ```
 
 An empty or single-item list makes `Shift+T` harmless. For coherent app + bundled-widget theming, keep built-in names such as `default`, `evangelion`, and `nerv` unless you also add the palette to both `tclock` and `tclock-system-health`.
+
+### Widget popup actions
+
+A widget can bind any single character except the reserved quit key `q` to a popup command. The action reruns the widget command by default and appends `args`, which lets one executable provide both its compact status and its detailed view. Set `command` on the action to run a different executable instead. Action commands receive the current `TCLOCK_WIDGET_THEME` just like normal refreshes.
+
+```toml
+[[clock.widgets]]
+title = "Service monitor"
+command = "service-monitor"
+refresh_secs = 300
+
+[[clock.widgets.popup_actions]]
+key = "d"
+label = "details"       # added to the generated popup title
+args = ["--details"]    # appended to service-monitor
+# title = "Services"    # optional complete popup-title override
+# command = ["journalctl", "--user", "-p", "warning"] # optional replacement
+# timeout_secs = 45     # optional; otherwise inherits the widget timeout
+```
+
+The binding is active only while its widget is visible. If visible widgets share a key, the last widget scrolled with the mouse wins; otherwise the first matching widget in config order does. Widget actions take precedence over the clock's mode-switch keys when deliberately assigned the same character. Inside a popup, use the mouse wheel, arrow keys, `PageUp`/`PageDown`, `Home`, or `End` to scroll, and `Esc` to close it.
 
 ### Widget groups
 
@@ -237,6 +259,11 @@ title = ""                    # the script renders its own title+verdict line
 command = "my-system-health"  # your wrapper around tclock-system-health
 refresh_secs = 300
 position = "bottom"
+
+[[clock.widgets.popup_actions]]
+key = "d"
+label = "details"
+args = ["--details"]
 ```
 
 Example wrapper using the NERV theme:
@@ -245,6 +272,8 @@ Example wrapper using the NERV theme:
 #!/usr/bin/env bash
 exec tclock-system-health --theme nerv "$@"
 ```
+
+Press `d` while the widget is visible to open failed user/system units and unsuccessful timer jobs, including a short journal excerpt for each. `Esc` closes the popup.
 
 ### Screenshot example
 
@@ -273,6 +302,11 @@ title = ""
 command = "tclock-system-health"
 refresh_secs = 300
 position = "bottom"
+
+[[clock.widgets.popup_actions]]
+key = "d"
+label = "details"
+args = ["--details"]
 ```
 
 Array commands are supported when you need arguments or a shell wrapper:

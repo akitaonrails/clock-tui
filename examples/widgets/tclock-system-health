@@ -61,6 +61,8 @@
 #   --left-col N                    left column visible width (default 44)
 #   --single-column                 stack all rows instead of pairing
 #   --no-btrfs                      omit the btrfs row even if btrfs is mounted
+#   --details                       show failed unit and timer-job diagnostics
+#                                   (intended for a tclock popup action)
 #   --title TEXT                    header title (default "System Health")
 #   --theme NAME                    color theme: default, evangelion, nerv
 #                                   (default: default;
@@ -139,6 +141,7 @@ DISK_CRIT=95
 LEFT_COL=44
 SINGLE_COLUMN=0
 NO_BTRFS=0
+DETAILS=0
 TITLE="System Health"
 THEME=${TCLOCK_SYSTEM_HEALTH_THEME:-${TCLOCK_WIDGET_THEME:-default}}
 LEFT_SPEC=()          # ordered left-column entries: "timer:LABEL:UNIT:STALE" | "snapshots"
@@ -173,6 +176,7 @@ while [ $# -gt 0 ]; do
     --left-col)       need_val "$1" "${2-}"; is_uint "$2" || die "--left-col must be a number"; LEFT_COL=$2; shift 2 ;;
     --single-column)  SINGLE_COLUMN=1; shift ;;
     --no-btrfs)       NO_BTRFS=1; shift ;;
+    --details)        DETAILS=1; shift ;;
     --title)          need_val "$1" "${2-}"; TITLE=$2; shift 2 ;;
     --theme)          need_val "$1" "${2-}"; THEME=$2; shift 2 ;;
     --list-themes)    list_themes; exit 0 ;;
@@ -381,6 +385,92 @@ jobs_line() {
     "$([ -n "$bad" ] && printf ' %s· fail:%s%s' "$Y" "$bad" "$N")"
 }
 
+# ---------- popup details: failed units and timer jobs ----------
+declare -A DETAIL_SEEN=()
+detail_count=0
+
+detail_unit() {
+  local scope=$1 unit=$2 source=$3 props description result state since code status line logs
+  local -a ctl journal
+  [ -n "$unit" ] || return
+  [ -z "${DETAIL_SEEN[$scope:$unit]:-}" ] || return
+  DETAIL_SEEN[$scope:$unit]=1
+  detail_count=$((detail_count + 1))
+
+  if [ "$scope" = user ]; then
+    ctl=(systemctl --user)
+    journal=(journalctl --user -u "$unit")
+  else
+    ctl=(systemctl)
+    journal=(journalctl -u "$unit")
+  fi
+
+  props=$("${ctl[@]}" show "$unit" \
+    -p Description -p Result -p ActiveState -p SubState \
+    -p StateChangeTimestamp -p ExecMainCode -p ExecMainStatus 2>/dev/null)
+  description=$(awk -F= '$1=="Description"{sub(/^[^=]*=/, ""); print; exit}' <<<"$props")
+  result=$(awk -F= '$1=="Result"{print $2; exit}' <<<"$props")
+  state=$(awk -F= '$1=="ActiveState"{a=$2} $1=="SubState"{s=$2} END{print a "/" s}' <<<"$props")
+  since=$(awk -F= '$1=="StateChangeTimestamp"{sub(/^[^=]*=/, ""); print; exit}' <<<"$props")
+  code=$(awk -F= '$1=="ExecMainCode"{print $2; exit}' <<<"$props")
+  status=$(awk -F= '$1=="ExecMainStatus"{print $2; exit}' <<<"$props")
+
+  printf '%s%s%s %s[%s · %s]%s\n' "$R" "$unit" "$N" "$D" "$scope" "$source" "$N"
+  [ -n "$description" ] && printf '  %s\n' "$description"
+  printf '  state %s%s%s · result %s%s%s' \
+    "$Y" "${state:-unknown}" "$N" "$R" "${result:-unknown}" "$N"
+  [ -n "$code$status" ] && printf ' · exit %s/%s' "${code:-?}" "${status:-?}"
+  [ -n "$since" ] && printf ' · since %s' "$since"
+  printf '\n'
+
+  logs=$({
+    # Preserve high-signal resource errors even when later shutdown noise would
+    # otherwise push the original cause out of the short excerpt.
+    "${journal[@]}" -n 160 --no-pager -o cat 2>/dev/null \
+      | grep -Eai 'quota|no space|read-only file system|out of memory' | tail -n 2
+    "${journal[@]}" -n 120 --no-pager -o cat 2>/dev/null \
+      | grep -Eai 'error|fail|quota|assert|core|abrt|segmentation|killed|status=' | tail -n 3
+  } | awk 'NF && !seen[$0]++' | cut -c1-240)
+  if [ -z "$logs" ]; then
+    logs=$("${journal[@]}" -n 3 --no-pager -o cat 2>/dev/null \
+      | awk 'NF' | cut -c1-240)
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] && printf '  %s%s%s\n' "$D" "$line" "$N"
+  done <<<"$logs"
+  printf '\n'
+}
+
+failed_unit_details() {
+  local scope=$1 unit
+  local -a ctl
+  if [ "$scope" = user ]; then ctl=(systemctl --user); else ctl=(systemctl); fi
+  while read -r unit; do
+    detail_unit "$scope" "$unit" "failed unit"
+  done < <("${ctl[@]}" --failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+}
+
+timer_failure_details() {
+  local service result
+  while read -r service; do
+    [ -n "$service" ] || continue
+    result=$(systemctl --user show "$service" -p Result --value 2>/dev/null)
+    [ -z "$result" ] || [ "$result" = success ] || detail_unit user "$service" "timer job"
+  done < <(systemctl --user list-timers --all --no-legend 2>/dev/null | awk '{print $NF}')
+}
+
+details_main() {
+  printf '%s%s — details%s\n\n' "$B" "$TITLE" "$N"
+  failed_unit_details user
+  failed_unit_details system
+  timer_failure_details
+  if [ "$detail_count" -eq 0 ]; then
+    printf '%s No failed user/system units or timer jobs found.\n' "$OK"
+  else
+    printf '%sRetained failed states remain visible until the unit succeeds or is reset.%s\n' "$D" "$N"
+  fi
+}
+
 # ---------- right column: storage (real filesystems, exclusions applied) ----------
 storage_line() {
   local out="" glyph=$OK dev pct mnt name seen="" lvl c skip ex
@@ -544,4 +634,8 @@ main() {
   return 0
 }
 
-main
+if [ "$DETAILS" = 1 ]; then
+  details_main
+else
+  main
+fi
