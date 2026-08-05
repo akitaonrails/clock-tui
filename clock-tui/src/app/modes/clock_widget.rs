@@ -1032,6 +1032,9 @@ fn terminate_process_group(pid: u32) {
 fn silent_kill(signal: &str, process_group: &str) -> bool {
     Command::new("kill")
         .arg(signal)
+        // procps `kill` treats a negative PID as another option without this
+        // separator, which can signal the caller's process group instead.
+        .arg("--")
         .arg(process_group)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1787,6 +1790,14 @@ mod tests {
         );
 
         assert_eq!(output, "nerv");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_group_signal_treats_negative_pid_as_an_operand() {
+        // This group is outside practical OS PID ranges. On procps `kill`,
+        // omitting `--` here signals the surrounding test process group.
+        assert!(!silent_kill("-TERM", "-2147483647"));
     }
 
     #[test]
