@@ -66,6 +66,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             match event::read()? {
                 Event::Key(key) => match key.code {
                     KeyCode::Char('q') => break,
+                    _ if app.has_widget_popup_open() => app.on_widget_popup_key(key.code),
+                    _ if app.open_widget_popup_action(key.code) => {}
                     KeyCode::Char(' ') => app.on_key(KeyCode::Char(' ')),
                     KeyCode::Char('c') => app.set_mode(Mode::Clock {
                         timezone: None,
@@ -83,9 +85,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         auto_quit: false,
                         execute: vec![],
                     }),
-                    KeyCode::Char('T') | KeyCode::Char('g') | KeyCode::Home | KeyCode::End => {
-                        app.on_key(key.code)
-                    }
+                    KeyCode::Char('T')
+                    | KeyCode::Char('g')
+                    | KeyCode::Char('z')
+                    | KeyCode::Home
+                    | KeyCode::End => app.on_key(key.code),
                     _ => {}
                 },
                 Event::Mouse(mouse) => match mouse.kind {

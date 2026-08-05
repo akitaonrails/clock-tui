@@ -1,5 +1,6 @@
 use std::{
     io::Read,
+    path::Path,
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,11 +17,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Paragraph, Widget, Wrap},
+    widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
 use crate::config::{
-    ClockWidgetConfig, WidgetPosition, DEFAULT_WIDGET_REFRESH_SECS, DEFAULT_WIDGET_TIMEOUT_SECS,
+    ClockWidgetConfig, ClockWidgetPopupActionConfig, WidgetPosition, DEFAULT_WIDGET_REFRESH_SECS,
+    DEFAULT_WIDGET_TIMEOUT_SECS,
 };
 
 const DEFAULT_REFRESH: Duration = Duration::from_secs(DEFAULT_WIDGET_REFRESH_SECS);
@@ -50,6 +52,9 @@ const MIN_WIDGET_ROW_HEIGHT: u16 = 8;
 // rendering an unusable sliver.
 const MIN_BOTTOM_WIDGET_HEIGHT: u16 = 3;
 const WIDGET_THEME_ENV: &str = "TCLOCK_WIDGET_THEME";
+const POPUP_MAX_WIDTH: u16 = 110;
+const POPUP_MAX_HEIGHT: u16 = 30;
+const POPUP_MARGIN: u16 = 2;
 
 pub(crate) struct ClockWidgets {
     widgets: Vec<ClockWidget>,
@@ -62,6 +67,12 @@ pub(crate) struct ClockWidgets {
     theme_index: usize,
     groups: Vec<String>,
     group_index: usize,
+    popup_tx: Sender<PopupMessage>,
+    popup_rx: Receiver<PopupMessage>,
+    popup: Option<WidgetPopup>,
+    popup_viewport: Rect,
+    popup_cancel: Option<Arc<AtomicBool>>,
+    popup_handle: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +153,7 @@ impl ClockTheme {
 struct ClockWidget {
     title: Option<String>,
     command: Vec<String>,
+    popup_actions: Vec<WidgetPopupAction>,
     refresh: Duration,
     timeout: Duration,
     position: WidgetPosition,
@@ -160,29 +172,62 @@ struct WidgetMessage {
     output: String,
 }
 
+#[derive(Clone)]
+struct WidgetPopupAction {
+    key: char,
+    label: Option<String>,
+    title: Option<String>,
+    command: Vec<String>,
+    timeout: Duration,
+}
+
+struct WidgetPopup {
+    widget_index: usize,
+    action_index: usize,
+    title: String,
+    output: String,
+    scroll: u16,
+}
+
+struct PopupMessage {
+    widget_index: usize,
+    action_index: usize,
+    output: String,
+}
+
 impl ClockWidgets {
     pub(crate) fn new(configs: Vec<ClockWidgetConfig>, themes: Vec<String>) -> Self {
         let (tx, rx) = mpsc::channel();
+        let (popup_tx, popup_rx) = mpsc::channel();
         let now = Instant::now();
         let cancel = Arc::new(AtomicBool::new(false));
         let themes = normalize_themes(themes);
         let groups = collect_groups(&configs);
         let widgets = configs
             .into_iter()
-            .map(|config| ClockWidget {
-                title: config.title,
-                command: config.command,
-                refresh: duration_or_default(config.refresh_secs, DEFAULT_REFRESH),
-                timeout: duration_or_default(config.timeout_secs, DEFAULT_TIMEOUT),
-                position: config.position,
-                group: normalize_group(config.group.as_deref()),
-                output: "Loading...".to_string(),
-                running: false,
-                visible: false,
-                scroll: 0,
-                next_run: now,
-                rerun_requested: false,
-                handle: None,
+            .map(|config| {
+                let timeout = duration_or_default(config.timeout_secs, DEFAULT_TIMEOUT);
+                let popup_actions = config
+                    .popup_actions
+                    .into_iter()
+                    .map(|action| popup_action(action, &config.command, timeout))
+                    .collect();
+                ClockWidget {
+                    title: config.title,
+                    command: config.command,
+                    popup_actions,
+                    refresh: duration_or_default(config.refresh_secs, DEFAULT_REFRESH),
+                    timeout,
+                    position: config.position,
+                    group: normalize_group(config.group.as_deref()),
+                    output: "Loading...".to_string(),
+                    running: false,
+                    visible: false,
+                    scroll: 0,
+                    next_run: now,
+                    rerun_requested: false,
+                    handle: None,
+                }
             })
             .collect();
 
@@ -197,6 +242,12 @@ impl ClockWidgets {
             theme_index: 0,
             groups,
             group_index: 0,
+            popup_tx,
+            popup_rx,
+            popup: None,
+            popup_viewport: Rect::default(),
+            popup_cancel: None,
+            popup_handle: None,
         }
     }
 
@@ -204,9 +255,20 @@ impl ClockWidgets {
         self.widgets.is_empty()
     }
 
+    /// Remove every widget from the active layout. Running commands may finish,
+    /// but `tick` will not schedule another refresh while they remain hidden.
+    pub(crate) fn hide_all(&mut self) {
+        for widget in &mut self.widgets {
+            widget.visible = false;
+        }
+        self.viewports.fill(Rect::default());
+        self.active_widget = None;
+    }
+
     pub(crate) fn tick(&mut self) {
         let now = Instant::now();
         let mut finished_handles = Vec::new();
+        let mut popup_finished = false;
 
         while let Ok(message) = self.rx.try_recv() {
             if let Some(widget) = self.widgets.get_mut(message.index) {
@@ -229,6 +291,24 @@ impl ClockWidgets {
 
         for handle in finished_handles {
             let _ = handle.join();
+        }
+
+        while let Ok(message) = self.popup_rx.try_recv() {
+            if let Some(popup) = self.popup.as_mut() {
+                if popup.widget_index == message.widget_index
+                    && popup.action_index == message.action_index
+                {
+                    popup.output = message.output;
+                    popup.clamp_scroll(self.popup_viewport);
+                    popup_finished = true;
+                }
+            }
+        }
+        if popup_finished {
+            if let Some(handle) = self.popup_handle.take() {
+                let _ = handle.join();
+            }
+            self.popup_cancel = None;
         }
 
         let theme = self.current_theme().to_string();
@@ -422,7 +502,110 @@ impl ClockWidgets {
         }
     }
 
+    pub(crate) fn render_popup(
+        &mut self,
+        terminal_area: Rect,
+        buf: &mut Buffer,
+        theme: ClockTheme,
+    ) {
+        let Some(popup) = self.popup.as_mut() else {
+            self.popup_viewport = Rect::default();
+            return;
+        };
+        let area = centered_popup_area(terminal_area);
+        if area.width == 0 || area.height == 0 {
+            self.popup_viewport = Rect::default();
+            return;
+        }
+
+        Clear.render(area, buf);
+        let block = Block::bordered()
+            .title(format!(" {} ", popup.title))
+            .title_style(theme.widget_title_style)
+            .title_bottom(" Esc close · ↑/↓ scroll ")
+            .style(theme.widget_style);
+        let inner = block.inner(area);
+        self.popup_viewport = inner;
+        popup.clamp_scroll(inner);
+        block.render(area, buf);
+
+        Paragraph::new(Text::from(ansi_lines(&popup.output, theme.widget_style)))
+            .style(theme.widget_style)
+            .scroll((popup.scroll, 0))
+            .wrap(Wrap { trim: false })
+            .render(inner, buf);
+    }
+
+    /// Run the popup action bound to `key` for a visible widget.
+    ///
+    /// The last mouse-scrolled widget wins when it defines the key; otherwise
+    /// the first visible widget in config order wins. The clock knows nothing
+    /// about action semantics — it only executes the configured command.
+    pub(crate) fn open_popup_action(&mut self, key: char) -> bool {
+        if self.popup.is_some() {
+            return false;
+        }
+        let Some((widget_index, action_index)) = self.popup_action_target(key) else {
+            return false;
+        };
+
+        let widget = &self.widgets[widget_index];
+        let action = &widget.popup_actions[action_index];
+        let title = popup_title(widget, action);
+        let command = action.command.clone();
+        let timeout = action.timeout;
+        let theme = self.current_theme().to_string();
+        let tx = self.popup_tx.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        self.popup = Some(WidgetPopup {
+            widget_index,
+            action_index,
+            title,
+            output: "Loading...".to_string(),
+            scroll: 0,
+        });
+        self.popup_viewport = Rect::default();
+        self.popup_cancel = Some(cancel.clone());
+        self.popup_handle = Some(thread::spawn(move || {
+            let output = run_command(command, timeout, cancel, theme);
+            let _ = tx.send(PopupMessage {
+                widget_index,
+                action_index,
+                output,
+            });
+        }));
+        true
+    }
+
+    pub(crate) fn close_popup(&mut self) {
+        if let Some(cancel) = self.popup_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(handle) = self.popup_handle.take() {
+            let _ = handle.join();
+        }
+        while self.popup_rx.try_recv().is_ok() {}
+        self.popup = None;
+        self.popup_viewport = Rect::default();
+    }
+
+    pub(crate) fn has_popup_open(&self) -> bool {
+        self.popup.is_some()
+    }
+
+    pub(crate) fn scroll_popup(&mut self, delta: i16) {
+        if let Some(popup) = self.popup.as_mut() {
+            popup.scroll_by(delta);
+            popup.clamp_scroll(self.popup_viewport);
+        }
+    }
+
     pub(crate) fn scroll_at(&mut self, column: u16, row: u16, delta: i16) {
+        if self.popup.is_some() {
+            self.scroll_popup(delta);
+            return;
+        }
         if let Some(index) = self.hit_test(column, row) {
             self.active_widget = Some(index);
             if let Some(widget) = self.widgets.get_mut(index) {
@@ -432,6 +615,10 @@ impl ClockWidgets {
     }
 
     pub(crate) fn scroll_active_to_top(&mut self) {
+        if let Some(popup) = self.popup.as_mut() {
+            popup.scroll = 0;
+            return;
+        }
         if let Some(widget) = self
             .active_widget
             .and_then(|index| self.widgets.get_mut(index))
@@ -441,6 +628,10 @@ impl ClockWidgets {
     }
 
     pub(crate) fn scroll_active_to_bottom(&mut self) {
+        if let Some(popup) = self.popup.as_mut() {
+            popup.scroll = popup.max_scroll(self.popup_viewport);
+            return;
+        }
         if let Some(index) = self.active_widget {
             if let (Some(widget), Some(area)) =
                 (self.widgets.get_mut(index), self.viewports.get(index))
@@ -455,10 +646,36 @@ impl ClockWidgets {
             .iter()
             .position(|area| rect_contains(*area, column, row))
     }
+
+    fn popup_action_target(&self, key: char) -> Option<(usize, usize)> {
+        self.active_widget
+            .filter(|&index| self.widgets.get(index).is_some_and(|widget| widget.visible))
+            .and_then(|index| {
+                self.widgets[index]
+                    .popup_actions
+                    .iter()
+                    .position(|action| action.key == key)
+                    .map(|action_index| (index, action_index))
+            })
+            .or_else(|| {
+                self.widgets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, widget)| widget.visible)
+                    .find_map(|(widget_index, widget)| {
+                        widget
+                            .popup_actions
+                            .iter()
+                            .position(|action| action.key == key)
+                            .map(|action_index| (widget_index, action_index))
+                    })
+            })
+    }
 }
 
 impl Drop for ClockWidgets {
     fn drop(&mut self) {
+        self.close_popup();
         self.cancel.store(true, Ordering::Relaxed);
         for widget in &mut self.widgets {
             if let Some(handle) = widget.handle.take() {
@@ -506,6 +723,104 @@ impl ClockWidget {
             .clone()
             .or_else(|| self.command.first().cloned())
             .unwrap_or_else(|| "widget".to_string())
+    }
+}
+
+impl WidgetPopup {
+    fn scroll_by(&mut self, delta: i16) {
+        if delta.is_negative() {
+            self.scroll = self.scroll.saturating_sub(delta.unsigned_abs());
+        } else {
+            self.scroll = self.scroll.saturating_add(delta as u16);
+        }
+    }
+
+    fn clamp_scroll(&mut self, area: Rect) {
+        self.scroll = self.scroll.min(self.max_scroll(area));
+    }
+
+    fn max_scroll(&self, area: Rect) -> u16 {
+        widget_text_height("", &self.output, area.width).saturating_sub(area.height)
+    }
+}
+
+fn popup_action(
+    config: ClockWidgetPopupActionConfig,
+    widget_command: &[String],
+    widget_timeout: Duration,
+) -> WidgetPopupAction {
+    let mut command = if config.command.is_empty() {
+        widget_command.to_vec()
+    } else {
+        config.command
+    };
+    command.extend(config.args);
+
+    WidgetPopupAction {
+        key: config.key,
+        label: normalize_optional_text(config.label),
+        title: normalize_optional_text(config.title),
+        command,
+        timeout: config
+            .timeout_secs
+            .map(|secs| duration_or_default(secs, DEFAULT_TIMEOUT))
+            .unwrap_or(widget_timeout),
+    }
+}
+
+fn popup_title(widget: &ClockWidget, action: &WidgetPopupAction) -> String {
+    if let Some(title) = &action.title {
+        return title.clone();
+    }
+
+    let base = widget
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            widget.command.first().map(|command| {
+                Path::new(command)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(command)
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| "widget".to_string());
+
+    match &action.label {
+        Some(label) => format!("{base} · {label}"),
+        None => base,
+    }
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn centered_popup_area(area: Rect) -> Rect {
+    let horizontal_margin = POPUP_MARGIN.saturating_mul(2);
+    let vertical_margin = POPUP_MARGIN.saturating_mul(2);
+    let width = area
+        .width
+        .saturating_sub(horizontal_margin)
+        .min(POPUP_MAX_WIDTH);
+    let height = area
+        .height
+        .saturating_sub(vertical_margin)
+        .min(POPUP_MAX_HEIGHT);
+
+    Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
+        width,
+        height,
     }
 }
 
@@ -811,7 +1126,11 @@ fn ansi_lines(output: &str, base_style: Style) -> Vec<Line<'static>> {
                 }
                 _ => {}
             }
-        } else if ch != '\r' {
+        } else if ch == '\t' {
+            text.push_str("    ");
+        } else if !ch.is_control() {
+            // Widget output can include logs or other externally influenced
+            // text. Never pass raw C0/C1 controls through the terminal backend.
             text.push(ch);
         }
     }
@@ -1038,6 +1357,7 @@ mod tests {
                 ClockWidgetConfig {
                     title: Some(String::new()),
                     command: vec!["self-header".to_string()],
+                    popup_actions: Vec::new(),
                     refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
                     timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
                     position: WidgetPosition::Auto,
@@ -1046,6 +1366,7 @@ mod tests {
                 ClockWidgetConfig {
                     title: None,
                     command: vec!["fallback-command".to_string()],
+                    popup_actions: Vec::new(),
                     refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
                     timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
                     position: WidgetPosition::Auto,
@@ -1054,6 +1375,7 @@ mod tests {
                 ClockWidgetConfig {
                     title: None,
                     command: Vec::new(),
+                    popup_actions: Vec::new(),
                     refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
                     timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
                     position: WidgetPosition::Auto,
@@ -1346,6 +1668,39 @@ mod tests {
     }
 
     #[test]
+    fn hiding_all_widgets_stops_refreshes_and_preserves_layout_state() {
+        let mut weather = grouped_widget_config("weather", Some("weather"));
+        weather.popup_actions = vec![popup_action_config('d', &["details"])];
+        let mut widgets = ClockWidgets::new(
+            vec![weather, grouped_widget_config("github", Some("github"))],
+            default_themes(),
+        );
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buffer = Buffer::empty(area);
+        widgets.render(area, area, &mut buffer, default_clock_theme());
+        widgets.widgets[0].output = "22C sunny".to_string();
+
+        widgets.hide_all();
+        widgets.tick();
+
+        assert!(widgets.widgets.iter().all(|widget| !widget.visible));
+        assert!(widgets.widgets.iter().all(|widget| !widget.running));
+        assert!(widgets
+            .viewports
+            .iter()
+            .all(|area| *area == Rect::default()));
+        assert_eq!(widgets.active_widget, None);
+        assert!(!widgets.open_popup_action('d'));
+        assert_eq!(widgets.current_group_for_test(), Some("weather"));
+        assert_eq!(widgets.widgets[0].output, "22C sunny");
+
+        widgets.render(area, area, &mut buffer, default_clock_theme());
+        assert!(widgets.widgets[0].visible);
+        assert!(!widgets.widgets[1].visible);
+        assert_eq!(widgets.widgets[0].output, "22C sunny");
+    }
+
+    #[test]
     fn cycling_is_inert_without_at_least_two_groups() {
         let mut widgets = ClockWidgets::new(
             vec![widget_config("a"), widget_config("b")],
@@ -1380,10 +1735,22 @@ mod tests {
         ClockWidgetConfig {
             title: Some(title.to_string()),
             command: vec![title.to_string()],
+            popup_actions: Vec::new(),
             refresh_secs: DEFAULT_WIDGET_REFRESH_SECS,
             timeout_secs: DEFAULT_WIDGET_TIMEOUT_SECS,
             position: WidgetPosition::Auto,
             group: None,
+        }
+    }
+
+    fn popup_action_config(key: char, args: &[&str]) -> ClockWidgetPopupActionConfig {
+        ClockWidgetPopupActionConfig {
+            key,
+            label: Some("details".to_string()),
+            title: None,
+            command: Vec::new(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            timeout_secs: None,
         }
     }
 
@@ -1420,6 +1787,111 @@ mod tests {
         );
 
         assert_eq!(output, "nerv");
+    }
+
+    #[test]
+    fn popup_actions_are_generic_commands_with_widget_defaults() {
+        let mut config = widget_config("health");
+        config.command = vec!["printf".to_string()];
+        config.timeout_secs = 7;
+        config.popup_actions = vec![popup_action_config('d', &["failure details"])];
+
+        let widgets = ClockWidgets::new(vec![config], default_themes());
+        let action = &widgets.widgets[0].popup_actions[0];
+
+        assert_eq!(action.key, 'd');
+        assert_eq!(action.command, vec!["printf", "failure details"]);
+        assert_eq!(action.timeout, Duration::from_secs(7));
+        assert_eq!(popup_title(&widgets.widgets[0], action), "health · details");
+    }
+
+    #[test]
+    fn popup_action_can_replace_command_and_timeout() {
+        let mut config = widget_config("health");
+        config.popup_actions = vec![ClockWidgetPopupActionConfig {
+            key: 'x',
+            label: None,
+            title: Some("Custom diagnostics".to_string()),
+            command: vec!["printf".to_string(), "%s".to_string()],
+            args: vec!["alternate".to_string()],
+            timeout_secs: Some(3),
+        }];
+
+        let widgets = ClockWidgets::new(vec![config], default_themes());
+        let action = &widgets.widgets[0].popup_actions[0];
+
+        assert_eq!(action.command, vec!["printf", "%s", "alternate"]);
+        assert_eq!(action.timeout, Duration::from_secs(3));
+        assert_eq!(
+            popup_title(&widgets.widgets[0], action),
+            "Custom diagnostics"
+        );
+    }
+
+    #[test]
+    fn visible_widget_popup_action_runs_and_closes() {
+        let mut config = widget_config("health");
+        config.command = vec!["printf".to_string()];
+        config.popup_actions = vec![popup_action_config('d', &["failed unit: example.service"])];
+        let mut widgets = ClockWidgets::new(vec![config], default_themes());
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buffer = Buffer::empty(area);
+        widgets.render(area, area, &mut buffer, default_clock_theme());
+
+        assert!(widgets.open_popup_action('d'));
+        assert!(widgets.has_popup_open());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while widgets
+            .popup
+            .as_ref()
+            .is_some_and(|popup| popup.output == "Loading...")
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+            widgets.tick();
+        }
+
+        assert_eq!(
+            widgets.popup.as_ref().map(|popup| popup.output.as_str()),
+            Some("failed unit: example.service")
+        );
+        widgets.render_popup(area, &mut buffer, default_clock_theme());
+        assert!(widgets.popup_viewport.width > 0);
+
+        widgets.close_popup();
+        assert!(!widgets.has_popup_open());
+    }
+
+    #[test]
+    fn active_widget_wins_when_popup_keys_overlap() {
+        let mut first = widget_config("first");
+        first.popup_actions = vec![popup_action_config('d', &["first"])];
+        let mut second = widget_config("second");
+        second.popup_actions = vec![popup_action_config('d', &["second"])];
+        let mut widgets = ClockWidgets::new(vec![first, second], default_themes());
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buffer = Buffer::empty(area);
+        widgets.render(area, area, &mut buffer, default_clock_theme());
+
+        widgets.scroll_at(60, 5, 0);
+        assert!(widgets.open_popup_action('d'));
+
+        assert_eq!(
+            widgets.popup.as_ref().map(|popup| popup.widget_index),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn popup_area_is_centered_and_bounded() {
+        assert_eq!(
+            centered_popup_area(Rect::new(10, 5, 200, 60)),
+            Rect::new(55, 20, POPUP_MAX_WIDTH, POPUP_MAX_HEIGHT)
+        );
+        assert_eq!(
+            centered_popup_area(Rect::new(0, 0, 80, 24)),
+            Rect::new(2, 2, 76, 20)
+        );
     }
 
     #[test]
@@ -1558,6 +2030,14 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].spans[0].content, "repo/name ok");
+    }
+
+    #[test]
+    fn ansi_lines_strip_raw_control_characters() {
+        let lines = ansi_lines("left\x07\x08\tcenter\u{009b}right", Style::default());
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].content, "left    centerright");
     }
 
     #[test]

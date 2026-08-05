@@ -325,6 +325,7 @@ impl App {
             match key {
                 KeyCode::Char('T') => w.cycle_widget_theme(),
                 KeyCode::Char('g') => w.cycle_widget_group(),
+                KeyCode::Char('z') => w.toggle_widgets(),
                 KeyCode::Home => w.scroll_active_widget_to_top(),
                 KeyCode::End => w.scroll_active_widget_to_bottom(),
                 _ => {}
@@ -336,10 +337,41 @@ impl App {
         }
     }
 
+    pub fn open_widget_popup_action(&mut self, key: KeyCode) -> bool {
+        let KeyCode::Char(key) = key else {
+            return false;
+        };
+        self.clock
+            .as_mut()
+            .is_some_and(|clock| clock.open_widget_popup_action(key))
+    }
+
+    pub fn on_widget_popup_key(&mut self, key: KeyCode) {
+        let Some(clock) = self.clock.as_mut() else {
+            return;
+        };
+        match key {
+            KeyCode::Esc => clock.close_widget_popup(),
+            KeyCode::Up => clock.scroll_widget_popup(-1),
+            KeyCode::Down => clock.scroll_widget_popup(1),
+            KeyCode::PageUp => clock.scroll_widget_popup(-10),
+            KeyCode::PageDown => clock.scroll_widget_popup(10),
+            KeyCode::Home => clock.scroll_active_widget_to_top(),
+            KeyCode::End => clock.scroll_active_widget_to_bottom(),
+            _ => {}
+        }
+    }
+
     pub fn on_mouse_scroll(&mut self, column: u16, row: u16, delta: i16) {
         if let Some(w) = self.clock.as_mut() {
             w.scroll_widget_at(column, row, delta);
         }
+    }
+
+    pub fn has_widget_popup_open(&self) -> bool {
+        self.clock
+            .as_ref()
+            .is_some_and(Clock::has_widget_popup_open)
     }
 
     pub fn is_ended(&self) -> bool {
@@ -546,7 +578,9 @@ fn parse_timezone(s: &str) -> Result<Tz, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ClockWidgetConfig, ClockWidgetPopupActionConfig, WidgetPosition};
     use clap::Parser;
+    use ratatui::{buffer::Buffer, layout::Rect};
 
     #[test]
     fn parse_duration_accepts_supported_units() {
@@ -653,6 +687,95 @@ mod tests {
                 .current_widget_theme_for_test(),
             "nerv"
         );
+    }
+
+    #[test]
+    fn z_toggles_the_clock_only_layout() {
+        let clock = Clock::new(
+            DEFAULT_CLOCK_SIZE,
+            Style::default(),
+            true,
+            false,
+            true,
+            None,
+            Vec::new(),
+            vec!["default".to_string()],
+        );
+        let mut app = App {
+            mode: Some(Mode::Clock {
+                timezone: None,
+                no_date: false,
+                no_seconds: false,
+                millis: false,
+            }),
+            color: None,
+            size: None,
+            theme: None,
+            clock: Some(clock),
+            timer: None,
+            stopwatch: None,
+            countdown: None,
+        };
+
+        assert!(app.clock.as_ref().unwrap().widgets_visible_for_test());
+        app.on_key(KeyCode::Char('z'));
+        assert!(!app.clock.as_ref().unwrap().widgets_visible_for_test());
+        app.on_key(KeyCode::Char('z'));
+        assert!(app.clock.as_ref().unwrap().widgets_visible_for_test());
+    }
+
+    #[test]
+    fn clock_routes_arbitrary_widget_popup_keys_and_escape_closes() {
+        let widget = ClockWidgetConfig {
+            title: Some("Diagnostics".to_string()),
+            command: vec!["printf".to_string()],
+            popup_actions: vec![ClockWidgetPopupActionConfig {
+                key: 'x',
+                label: Some("inspect".to_string()),
+                title: None,
+                command: Vec::new(),
+                args: vec!["details".to_string()],
+                timeout_secs: None,
+            }],
+            refresh_secs: 900,
+            timeout_secs: 30,
+            position: WidgetPosition::Auto,
+            group: None,
+        };
+        let mut clock = Clock::new(
+            DEFAULT_CLOCK_SIZE,
+            Style::default(),
+            true,
+            false,
+            true,
+            None,
+            vec![widget],
+            vec!["default".to_string()],
+        );
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buffer = Buffer::empty(area);
+        clock.render(area, &mut buffer);
+        let mut app = App {
+            mode: Some(Mode::Clock {
+                timezone: None,
+                no_date: false,
+                no_seconds: false,
+                millis: false,
+            }),
+            color: None,
+            size: None,
+            theme: None,
+            clock: Some(clock),
+            timer: None,
+            stopwatch: None,
+            countdown: None,
+        };
+
+        assert!(app.open_widget_popup_action(KeyCode::Char('x')));
+        assert!(app.has_widget_popup_open());
+        app.on_widget_popup_key(KeyCode::Esc);
+        assert!(!app.has_widget_popup_open());
+        assert!(!app.open_widget_popup_action(KeyCode::F(1)));
     }
 
     #[test]

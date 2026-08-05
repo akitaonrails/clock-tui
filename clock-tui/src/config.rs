@@ -92,6 +92,8 @@ pub struct ClockWidgetConfig {
     pub title: Option<String>,
     #[serde(default, deserialize_with = "deserialize_widget_command")]
     pub command: Vec<String>,
+    #[serde(default)]
+    pub popup_actions: Vec<ClockWidgetPopupActionConfig>,
     #[serde(default = "default_widget_refresh_secs")]
     pub refresh_secs: u64,
     #[serde(default = "default_widget_timeout_secs")]
@@ -104,6 +106,28 @@ pub struct ClockWidgetConfig {
     /// so the first grouped widget's group is the one shown at startup.
     #[serde(default)]
     pub group: Option<String>,
+}
+
+/// A global key binding contributed by a clock widget.
+///
+/// Triggering the key while the widget is visible runs `command`, or reruns
+/// the widget's command when omitted, appends `args`, and shows the result in a
+/// modal popup. This keeps popup behavior generic: widget commands decide what
+/// their action means, while the clock framework only handles execution and UI.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClockWidgetPopupActionConfig {
+    pub key: char,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_widget_command")]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Optional action-specific timeout. Omit it to inherit the widget timeout.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,6 +337,7 @@ mod tests {
         let widget = &config.clock.widgets[0];
         assert_eq!(widget.title.as_deref(), Some("Pending"));
         assert_eq!(widget.command, vec!["ghpending"]);
+        assert!(widget.popup_actions.is_empty());
         assert_eq!(widget.refresh_secs, 15 * 60);
         assert_eq!(widget.timeout_secs, 30);
         assert_eq!(widget.position, WidgetPosition::Auto);
@@ -360,6 +385,12 @@ mod tests {
             command = ["sh", "-c", "printf ok"]
             refresh_secs = 5
             timeout_secs = 2
+
+            [[clock.widgets.popup_actions]]
+            key = "d"
+            label = "details"
+            args = ["--details"]
+            timeout_secs = 4
             "#,
         )
         .unwrap();
@@ -368,6 +399,12 @@ mod tests {
         assert_eq!(widget.command, vec!["sh", "-c", "printf ok"]);
         assert_eq!(widget.refresh_secs, 5);
         assert_eq!(widget.timeout_secs, 2);
+        assert_eq!(widget.popup_actions.len(), 1);
+        let action = &widget.popup_actions[0];
+        assert_eq!(action.key, 'd');
+        assert_eq!(action.label.as_deref(), Some("details"));
+        assert_eq!(action.args, vec!["--details"]);
+        assert_eq!(action.timeout_secs, Some(4));
     }
 
     #[test]
