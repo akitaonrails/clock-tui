@@ -61,8 +61,9 @@
 #   --left-col N                    left column visible width (default 44)
 #   --single-column                 stack all rows instead of pairing
 #   --no-btrfs                      omit the btrfs row even if btrfs is mounted
-#   --details                       show failed unit and timer-job diagnostics
-#                                   (intended for a tclock popup action)
+#   --details                       explain failed/retained units, timer jobs,
+#                                   storage pressure, and btrfs allocation/I/O
+#                                   state (intended for a tclock popup action)
 #   --title TEXT                    header title (default "System Health")
 #   --theme NAME                    color theme: default, evangelion, nerv
 #                                   (default: default;
@@ -213,6 +214,17 @@ now_s=$(date +%s)
 age_hours() { echo $(( (now_s - $(date -d "$1" +%s 2>/dev/null || echo "$now_s")) / 3600 )); }
 age_days()  { echo $(( (now_s - $(date -d "$1" +%s 2>/dev/null || echo "$now_s")) / 86400 )); }
 
+human_bytes() {
+  awk -v bytes="$1" 'BEGIN {
+    split("KiB MiB GiB TiB PiB", units, " ")
+    if (bytes < 1024) { printf "%d B", bytes; exit }
+    value = bytes
+    for (i = 1; i <= 5 && value >= 1024; i++) value /= 1024
+    if (value >= 10) printf "%.0f %s", value, units[i - 1]
+    else printf "%.1f %s", value, units[i - 1]
+  }'
+}
+
 # visible length: strip ANSI, count characters (not bytes)
 vlen() {
   local s
@@ -362,20 +374,66 @@ snapshot_line() {
 }
 
 # ---------- right column: user jobs (timers + failed units) ----------
+list_failed_units() {
+  if [ "$1" = user ]; then
+    systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{print $1}'
+  else
+    systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+# A failed automount can be a retained boot-race result even though its paired
+# mount later recovered. Only soften it when the mount is currently mounted and
+# reports success; an unavailable mount remains a real failure.
+recovered_automount() {
+  local scope=$1 unit=$2 mount_unit props active sub result
+  local -a ctl
+  case "$unit" in *.automount) ;; *) return 1 ;; esac
+  mount_unit=${unit%.automount}.mount
+  if [ "$scope" = user ]; then ctl=(systemctl --user); else ctl=(systemctl); fi
+  props=$("${ctl[@]}" show "$mount_unit" -p ActiveState -p SubState -p Result 2>/dev/null)
+  active=$(awk -F= '$1=="ActiveState"{print $2; exit}' <<<"$props")
+  sub=$(awk -F= '$1=="SubState"{print $2; exit}' <<<"$props")
+  result=$(awk -F= '$1=="Result"{print $2; exit}' <<<"$props")
+  [ "$active" = active ] && [ "$sub" = mounted ] && [ "$result" = success ] || return 1
+  printf '%s\t%s\t%s\t%s\n' "$mount_unit" "$active" "$sub" "$result"
+}
+
 jobs_line() {
-  local timers failed_user failed_sys bad="" svc res glyph=$OK
+  local timers failed_user=0 failed_sys=0 retained_user=0 retained_sys=0
+  local bad="" svc res glyph=$OK scope unit recovery failed_total retained_total fword
   timers=$(systemctl --user list-timers --no-legend 2>/dev/null | grep -c .)
-  failed_user=$(systemctl --user --failed --no-legend 2>/dev/null | grep -c .)
-  failed_sys=$(systemctl --failed --no-legend 2>/dev/null | grep -c .)
+  for scope in user system; do
+    while read -r unit; do
+      [ -n "$unit" ] || continue
+      if recovery=$(recovered_automount "$scope" "$unit"); then
+        if [ "$scope" = user ]; then
+          retained_user=$((retained_user + 1))
+        else
+          retained_sys=$((retained_sys + 1))
+        fi
+      elif [ "$scope" = user ]; then
+        failed_user=$((failed_user + 1))
+      else
+        failed_sys=$((failed_sys + 1))
+      fi
+    done < <(list_failed_units "$scope")
+  done
   while read -r svc; do
     [ -n "$svc" ] || continue
     res=$(systemctl --user show "$svc" -p Result --value 2>/dev/null)
     [ "$res" = "success" ] || [ -z "$res" ] || bad="$bad ${svc%.service}"
   done < <(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $NF}')
-  local failed_total=$((failed_user + failed_sys)) fword
+  failed_total=$((failed_user + failed_sys))
+  retained_total=$((retained_user + retained_sys))
   if [ "$failed_total" -gt 0 ]; then
     glyph=$ER; bump 2
     fword="${R}$failed_total failed${N} (${failed_user}u/${failed_sys}s)"
+    [ "$retained_total" -gt 0 ] \
+      && fword="$fword ${D}·${N} ${Y}$retained_total retained${N} (${retained_user}u/${retained_sys}s)"
+  elif [ "$retained_total" -gt 0 ]; then
+    glyph=$WA; bump 1
+    fword="${Y}$retained_total retained${N} (${retained_user}u/${retained_sys}s)"
   else
     fword="0 failed units"
   fi
@@ -388,14 +446,24 @@ jobs_line() {
 # ---------- popup details: failed units and timer jobs ----------
 declare -A DETAIL_SEEN=()
 detail_count=0
+detail_failed_count=0
+detail_retained_count=0
 
 detail_unit() {
-  local scope=$1 unit=$2 source=$3 props description result state since code status line logs
+  local scope=$1 unit=$2 source=$3 kind=${4:-failed}
+  local props description result state since code status line logs header_color=$R recovery
+  local recovered_unit recovered_active recovered_sub recovered_result
   local -a ctl journal
   [ -n "$unit" ] || return
   [ -z "${DETAIL_SEEN[$scope:$unit]:-}" ] || return
   DETAIL_SEEN[$scope:$unit]=1
   detail_count=$((detail_count + 1))
+  if [ "$kind" = retained ]; then
+    detail_retained_count=$((detail_retained_count + 1))
+    header_color=$Y
+  else
+    detail_failed_count=$((detail_failed_count + 1))
+  fi
 
   if [ "$scope" = user ]; then
     ctl=(systemctl --user)
@@ -415,13 +483,20 @@ detail_unit() {
   code=$(awk -F= '$1=="ExecMainCode"{print $2; exit}' <<<"$props")
   status=$(awk -F= '$1=="ExecMainStatus"{print $2; exit}' <<<"$props")
 
-  printf '%s%s%s %s[%s · %s]%s\n' "$R" "$unit" "$N" "$D" "$scope" "$source" "$N"
+  printf '%s%s%s %s[%s · %s]%s\n' "$header_color" "$unit" "$N" "$D" "$scope" "$source" "$N"
   [ -n "$description" ] && printf '  %s\n' "$description"
   printf '  state %s%s%s · result %s%s%s' \
     "$Y" "${state:-unknown}" "$N" "$R" "${result:-unknown}" "$N"
   [ -n "$code$status" ] && printf ' · exit %s/%s' "${code:-?}" "${status:-?}"
   [ -n "$since" ] && printf ' · since %s' "$since"
   printf '\n'
+
+  if [ "$kind" = retained ] && recovery=$(recovered_automount "$scope" "$unit"); then
+    IFS=$'\t' read -r recovered_unit recovered_active recovered_sub recovered_result <<<"$recovery"
+    printf '  %sRecovered:%s %s is %s/%s with result %s.\n' \
+      "$G" "$N" "$recovered_unit" "$recovered_active" "$recovered_sub" "$recovered_result"
+    printf '  The resource is available; systemd is retaining the earlier automount failure.\n'
+  fi
 
   logs=$({
     # Preserve high-signal resource errors even when later shutdown noise would
@@ -442,12 +517,14 @@ detail_unit() {
 }
 
 failed_unit_details() {
-  local scope=$1 unit
-  local -a ctl
-  if [ "$scope" = user ]; then ctl=(systemctl --user); else ctl=(systemctl); fi
+  local scope=$1 unit recovery
   while read -r unit; do
-    detail_unit "$scope" "$unit" "failed unit"
-  done < <("${ctl[@]}" --failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+    if recovery=$(recovered_automount "$scope" "$unit"); then
+      detail_unit "$scope" "$unit" "retained failed state" retained
+    else
+      detail_unit "$scope" "$unit" "failed unit"
+    fi
+  done < <(list_failed_units "$scope")
 }
 
 timer_failure_details() {
@@ -465,16 +542,20 @@ details_main() {
   failed_unit_details system
   timer_failure_details
   if [ "$detail_count" -eq 0 ]; then
-    printf '%s No failed user/system units or timer jobs found.\n' "$OK"
+    printf '%s No failed user/system units or timer jobs found.\n\n' "$OK"
   else
-    printf '%sRetained failed states remain visible until the unit succeeds or is reset.%s\n' "$D" "$N"
+    [ "$detail_retained_count" -gt 0 ] && printf '%sRetained states are read-only here; reset them only after confirming recovery.%s\n' "$D" "$N"
+    [ "$detail_failed_count" -gt 0 ] && printf '%sFailed states stay visible until the unit succeeds or is reset.%s\n' "$D" "$N"
+    printf '\n'
   fi
+  storage_details
+  btrfs_details
 }
 
 # ---------- right column: storage (real filesystems, exclusions applied) ----------
-storage_line() {
-  local out="" glyph=$OK dev pct mnt name seen="" lvl c skip ex
-  while read -r dev pct mnt; do
+storage_records() {
+  local dev size used avail pct mnt seen="" skip ex
+  while read -r dev size used avail pct mnt; do
     case "$dev" in /dev/*) ;; *) continue ;; esac
     skip=0
     for ex in ${EXCLUDE_MOUNTS[@]+"${EXCLUDE_MOUNTS[@]}"}; do
@@ -485,15 +566,66 @@ storage_line() {
     seen="$seen $dev"
     pct=${pct%\%}
     is_uint "$pct" || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$dev" "$size" "$used" "$avail" "$pct" "$mnt"
+  done < <(df -B1 --output=source,size,used,avail,pcent,target 2>/dev/null | tail -n +2)
+}
+
+storage_line() {
+  local out="" glyph=$OK dev size used avail pct mnt name lvl c
+  while IFS=$'\t' read -r dev size used avail pct mnt; do
     name=$(basename "$mnt"); [ "$mnt" = "/" ] && name=root
     if   [ "$pct" -ge "$DISK_CRIT" ]; then c=$R; lvl=2
     elif [ "$pct" -ge "$DISK_WARN" ]; then c=$Y; lvl=1
     else c=$G; lvl=0; fi
     bump $lvl; [ $lvl -eq 2 ] && glyph=$ER; [ $lvl -eq 1 ] && [ "$glyph" != "$ER" ] && glyph=$WA
     out="$out${out:+ ${D}·${N} }$name ${c}${pct}%${N}"
-  done < <(df --output=source,pcent,target 2>/dev/null | tail -n +2 | awk '{print $1, $2, $3}')
+  done < <(storage_records)
   [ -n "$out" ] || out="${D}no local filesystems found${N}"
   printf '%s %s%-8s%s %b\n' "$glyph" "$LBL" "storage" "$N" "$out"
+}
+
+largest_directories() {
+  local mnt=$1 scan scan_status bytes path shown=0 heading
+  if ! command -v timeout >/dev/null 2>&1; then
+    printf '  %sLargest-directory scan unavailable (timeout is not installed).%s\n' "$D" "$N"
+    return
+  fi
+  scan=$(timeout 3s du -x -B1 --max-depth=1 -- "$mnt" 2>/dev/null)
+  scan_status=$?
+  if [ "$scan_status" -eq 0 ]; then
+    heading='Largest child directories:'
+  else
+    heading='Largest readable child directories found before the scan stopped:'
+  fi
+  [ -n "$scan" ] && printf '  %s%s%s\n' "$D" "$heading" "$N"
+  while IFS=$'\t' read -r bytes path; do
+    [ -n "$bytes" ] && [ -n "$path" ] && [ "$path" != "$mnt" ] || continue
+    printf '  %s — %s\n' "$path" "$(human_bytes "$bytes")"
+    shown=$((shown + 1))
+  done < <(sort -nr -k1,1 <<<"$scan" | head -n 5)
+  [ "$shown" -gt 0 ] || printf '  %sNo readable child-directory sizes were returned.%s\n' "$D" "$N"
+  if [ "$scan_status" -eq 124 ]; then
+    printf '  %sDirectory scan stopped after 3 seconds; the list is partial.%s\n' "$D" "$N"
+  elif [ "$scan_status" -ne 0 ]; then
+    printf '  %sDirectory scan was incomplete (exit %s); unreadable paths were skipped.%s\n' \
+      "$D" "$scan_status" "$N"
+  fi
+}
+
+storage_details() {
+  local dev size used avail pct mnt found=0 c
+  while IFS=$'\t' read -r dev size used avail pct mnt; do
+    [ "$pct" -ge "$DISK_WARN" ] || continue
+    if [ "$found" -eq 0 ]; then printf '%sStorage%s\n' "$B" "$N"; fi
+    found=$((found + 1))
+    if [ "$pct" -ge "$DISK_CRIT" ]; then c=$R; else c=$Y; fi
+    printf '%s%s%s — %s%s%%%s used (%s / %s, %s free)\n' \
+      "$c" "$mnt" "$N" "$c" "$pct" "$N" \
+      "$(human_bytes "$used")" "$(human_bytes "$size")" "$(human_bytes "$avail")"
+    largest_directories "$mnt"
+    printf '\n'
+  done < <(storage_records)
+  [ "$found" -gt 0 ] || printf '%s No filesystems meet the %s%% warning threshold.\n\n' "$OK" "$DISK_WARN"
 }
 
 # ---------- right column: system (zombies, load, memory) ----------
@@ -521,11 +653,46 @@ system_line() {
 }
 
 # ---------- bottom row: btrfs maintenance triad + error counters ----------
+btrfs_allocation_info() {
+  local mnt=$1 usage metrics size unallocated free pct used_pct state=unknown
+  if ! usage=$(btrfs filesystem usage -b "$mnt" 2>/dev/null); then
+    printf 'unknown\t0\t0\t0\t0\t0\n'
+    return
+  fi
+  metrics=$(awk '
+    /Device size:/{size=$NF}
+    /Device unallocated:/{unallocated=$NF}
+    /Free \(estimated\):/{estimated=$NF}
+    /Free \(statfs, df\):/{statfs=$NF}
+    END {
+      free = statfs != "" ? statfs : estimated
+      if (size > 0 && unallocated != "")
+        printf "%.0f\t%.0f\t%.0f\t%d", size, unallocated, free + 0, unallocated * 100 / size
+    }' <<<"$usage")
+  [ -n "$metrics" ] || { printf 'unknown\t0\t0\t0\t0\t0\n'; return; }
+  IFS=$'\t' read -r size unallocated free pct <<<"$metrics"
+  used_pct=$(df --output=pcent -- "$mnt" 2>/dev/null | tail -n 1)
+  used_pct=${used_pct//[!0-9]/}
+  if ! is_uint "$used_pct"; then
+    used_pct=$(( size > 0 ? (size - free) * 100 / size : 0 ))
+  fi
+  if [ "$pct" -ge 15 ]; then
+    state=ok
+  elif [ "$used_pct" -ge "$DISK_WARN" ]; then
+    state=capacity
+  elif [ "$pct" -lt 8 ]; then
+    state=critical
+  else
+    state=warn
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$state" "$pct" "$used_pct" "$size" "$unallocated" "$free"
+}
+
 btrfs_line() {
   [ "$NO_BTRFS" = 1 ] && return 0
   command -v btrfs >/dev/null 2>&1 || return 0
   local fs_list glyph=$OK errs=0 e scrub="" last_us days res c lvl=0 mnt label esc
-  local stats usage io_unknown=0 usage_seen=0
+  local stats io_unknown=0 allocation_seen=0
   fs_list=$(btrfs_filesystems)
   [ -n "$fs_list" ] || return 0   # no btrfs on this host: omit the row entirely
   while IFS=: read -r mnt label esc smnt; do
@@ -558,24 +725,42 @@ btrfs_line() {
     [ "$res" != "success" ] && [ -n "$res" ] && { c=$R; lvl=2; }
     trim="${c}${days}d${N}"
   fi
-  # allocation pressure: balance is only needed when unallocated device space
-  # runs out while chunks sit half-empty — monitor instead of scheduling
-  local alloc="${G}ok${N}" worst_pct=100 worst_fs="" pct
+  # Low unallocated device space only suggests balance while the filesystem
+  # still has ordinary free space. On a nearly full filesystem it is a symptom
+  # of capacity pressure already reported by the storage row.
+  local alloc="${G}ok${N}" action_pct=101 action_fs="" action_lvl=0
+  local capacity_pct=101 capacity_fs="" unknown=0 info state pct used_pct size unallocated free
   while IFS=: read -r mnt label esc smnt; do
     [ -n "$smnt" ] || smnt=$mnt
-    if ! usage=$(btrfs filesystem usage -b "$smnt" 2>/dev/null); then
-      continue
-    fi
-    usage_seen=1
-    pct=$(awk '
-      /Device size:/{size=$NF} /Device unallocated:/{un=$NF}
-      END{if (size > 0) printf "%d", un*100/size}' <<<"$usage")
-    is_uint "$pct" || continue
-    if [ "$pct" -lt "$worst_pct" ]; then worst_pct=$pct; worst_fs=$label; fi
+    info=$(btrfs_allocation_info "$smnt")
+    IFS=$'\t' read -r state pct used_pct size unallocated free <<<"$info"
+    case "$state" in
+      critical)
+        allocation_seen=1
+        if [ "$action_lvl" -lt 2 ] || [ "$pct" -lt "$action_pct" ]; then
+          action_lvl=2; action_pct=$pct; action_fs=$label
+        fi ;;
+      warn)
+        allocation_seen=1
+        if [ "$action_lvl" -eq 0 ] || { [ "$action_lvl" -eq 1 ] && [ "$pct" -lt "$action_pct" ]; }; then
+          action_lvl=1; action_pct=$pct; action_fs=$label
+        fi ;;
+      capacity)
+        allocation_seen=1
+        if [ "$pct" -lt "$capacity_pct" ]; then capacity_pct=$pct; capacity_fs=$label; fi ;;
+      ok) allocation_seen=1 ;;
+      *) unknown=1 ;;
+    esac
   done <<<"$fs_list"
-  if [ "$usage_seen" -eq 0 ]; then alloc="${Y}unknown${N}"; lvl=$((lvl > 1 ? lvl : 1))
-  elif [ "$worst_pct" -lt 8 ]; then alloc="${R}$worst_fs ${worst_pct}% unalloc${N}"; lvl=2
-  elif [ "$worst_pct" -lt 15 ]; then alloc="${Y}$worst_fs ${worst_pct}% unalloc${N}"; lvl=$((lvl > 1 ? lvl : 1)); fi
+  if [ "$action_lvl" -eq 2 ]; then
+    alloc="${R}$action_fs ${action_pct}% unalloc${N}"; lvl=2
+  elif [ "$action_lvl" -eq 1 ]; then
+    alloc="${Y}$action_fs ${action_pct}% unalloc${N}"; lvl=$((lvl > 1 ? lvl : 1))
+  elif [ -n "$capacity_fs" ]; then
+    alloc="${D}$capacity_fs capacity-bound${N}"
+  elif [ "$allocation_seen" -eq 0 ] || [ "$unknown" -eq 1 ]; then
+    alloc="${Y}unknown${N}"; lvl=$((lvl > 1 ? lvl : 1))
+  fi
   bump $lvl
   [ $lvl -eq 1 ] && glyph=$WA; [ $lvl -eq 2 ] && glyph=$ER
   if [ "$errs" -gt 0 ]; then glyph=$ER; bump 2; fi
@@ -583,6 +768,42 @@ btrfs_line() {
   printf '%s %s%-8s%s scrub: %b %s·%s trim %b %s·%s alloc %b %s·%s %b io errors\n' \
     "$glyph" "$LBL" "btrfs" "$N" "$scrub" "$D" "$N" "$trim" "$D" "$N" "$alloc" "$D" "$N" \
     "$([ "$errs" -gt 0 ] && printf '%s%s%s' "$R" "$errs" "$N" || { [ "$io_unknown" -eq 1 ] && printf '%sunknown%s' "$Y" "$N" || printf '%s0%s' "$G" "$N"; })"
+}
+
+btrfs_details() {
+  [ "$NO_BTRFS" = 1 ] && return 0
+  command -v btrfs >/dev/null 2>&1 || return 0
+  local fs_list mnt label esc smnt stats errors info state pct used_pct size unallocated free
+  fs_list=$(btrfs_filesystems)
+  [ -n "$fs_list" ] || return 0
+  printf '%sBtrfs allocation and I/O%s\n' "$B" "$N"
+  while IFS=: read -r mnt label esc smnt; do
+    [ -n "$smnt" ] || smnt=$mnt
+    info=$(btrfs_allocation_info "$smnt")
+    IFS=$'\t' read -r state pct used_pct size unallocated free <<<"$info"
+    if stats=$(btrfs device stats "$smnt" 2>/dev/null); then
+      errors=$(awk '{sum+=$NF} END{print sum+0}' <<<"$stats")
+    else
+      errors=unknown
+    fi
+    printf '%s — %s%% used; %s unallocated of %s; %s filesystem free; I/O errors: %s\n' \
+      "$mnt" "$used_pct" "$(human_bytes "$unallocated")" "$(human_bytes "$size")" \
+      "$(human_bytes "$free")" "$errors"
+    case "$state" in
+      capacity)
+        printf '  Low unallocated device space is a consequence of filesystem capacity pressure.\n'
+        printf '  Delete or move data first; balancing does not create free space.\n' ;;
+      critical|warn)
+        printf '  Low unallocated device space despite ordinary free space suggests sparse chunks.\n'
+        printf '  Inspect chunk usage before considering a targeted balance.\n' ;;
+      unknown)
+        printf '  %sAllocation details could not be read.%s\n' "$Y" "$N" ;;
+    esac
+    [ "$errors" != 0 ] && [ "$errors" != unknown ] \
+      && printf '  %sNonzero device error counters require investigation.%s\n' "$R" "$N"
+    [ "$errors" = unknown ] && printf '  %sDevice error counters could not be read.%s\n' "$Y" "$N"
+    printf '\n'
+  done <<<"$fs_list"
 }
 
 # ---------- assembly ----------
