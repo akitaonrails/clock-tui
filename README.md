@@ -247,7 +247,7 @@ To show a different region, change the location in the `wttr.in` URL — it acce
 
 ### Bundled example: system-health widget
 
-The repo ships a ready-to-use widget at [`examples/widgets/tclock-system-health`](./examples/widgets/tclock-system-health). The AUR package installs it as `/usr/bin/tclock-system-health`; release tarballs include it beside `tclock`, so manual installs can extract it to `~/.local/bin` or copy it to `/usr/local/bin`. It renders a two-column health dashboard with a one-line verdict header: backup/cleanup timer freshness, timeshift snapshots, live system/jobs/storage state, and a full-width btrfs row (scrub age per filesystem, fstrim age, allocation pressure, device I/O error counters) — all without root.
+The repo ships a ready-to-use widget at [`examples/widgets/tclock-system-health`](./examples/widgets/tclock-system-health). The AUR package installs it as `/usr/bin/tclock-system-health`; release tarballs include it beside `tclock`, so manual installs can extract it to `~/.local/bin` or copy it to `/usr/local/bin`. It renders a two-column health dashboard with a one-line verdict header: backup/cleanup timer freshness, timeshift snapshots, live system/jobs/storage state, and a full-width btrfs row (scrub age per filesystem, fstrim age, allocation pressure, device I/O error counters) — all without root. A failed automount whose paired mount has recovered is shown as a retained warning instead of a live failure. Low Btrfs device-unallocated space is reported as a separate allocation problem only while the filesystem still has ordinary free space; when the filesystem itself is nearly full, the storage alert remains the actionable diagnosis.
 
 Run it with no arguments and it auto-detects common setups (backup-looking user timers with staleness derived from each timer's own period, timeshift via grub-btrfs, btrfs rows only when btrfs is mounted, removable media excluded). Host-specific tuning is plain flags — see `tclock-system-health --help`. The intended pattern is a tiny wrapper script on your PATH holding your host's flags, referenced from the widget config:
 
@@ -273,7 +273,7 @@ Example wrapper using the NERV theme:
 exec tclock-system-health --theme nerv "$@"
 ```
 
-Press `d` while the widget is visible to open failed user/system units and unsuccessful timer jobs, including a short journal excerpt for each. `Esc` closes the popup.
+Press `d` while the widget is visible to open details for failed or retained units, unsuccessful timer jobs, filesystems over the configured usage threshold, and Btrfs allocation and I/O state. Storage details include exact used/free values and a three-second, best-effort scan of the largest readable child directories. The command is read-only: it never resets units, deletes files, or runs a balance. `Esc` closes the popup.
 
 ### Screenshot example
 

@@ -69,7 +69,7 @@ label = "details"
 args = ["--details"]
 ```
 
-The popup action is theme-aware too: press `d` for failed-unit and timer-job details, then `Esc` to close it.
+The popup action is theme-aware too: press `d` for failed/retained-unit, timer-job, storage-capacity, and Btrfs allocation/I/O details, then `Esc` to close it. Diagnostics are read-only, and the largest-directory scan is capped at three seconds per filesystem over the configured warning threshold.
 
 ## Built-in themes
 
