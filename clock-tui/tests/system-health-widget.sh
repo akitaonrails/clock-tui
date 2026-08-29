@@ -199,14 +199,40 @@ assert_contains "$balanced" 'storage  data 50%'
 assert_contains "$balanced" 'alloc data 2% unalloc'
 assert_contains "$balanced" 'problems detected'
 
-details=$(run_widget retained --details)
+details=$(run_widget retained --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$details" 'attention needed · 1 warning'
+assert_contains "$details" 'jobs      1 automount unit(s) still show an old failure although the mount recovered'
 assert_contains "$details" 'mnt-data.automount [system · retained failed state]'
 assert_contains "$details" 'mnt-data.mount is active/mounted with result success'
+assert_not_contains "$details" 'Nothing is flagged'
 
 details=$(run_widget full --details)
+assert_contains "$details" 'problems detected · 1 critical'
+assert_contains "$details" 'storage   /data is 96% full'
 assert_contains "$details" '/data — 96% used (960 B / 1000 B, 40 B free)'
 assert_contains "$details" '/data/big — 600 B'
 assert_contains "$details" 'Low unallocated device space is a consequence of filesystem capacity pressure.'
 assert_contains "$details" 'Delete or move data first; balancing does not create free space.'
+
+# balanced: the only problem is btrfs allocation — the summary must say so
+details=$(run_widget balanced --details)
+assert_contains "$details" 'problems detected · 1 critical'
+assert_contains "$details" 'btrfs     /data has only 2% of its device unallocated'
+assert_contains "$details" '/data — 50% used · 2% unallocated (20 B of 1000 B)'
+assert_contains "$details" 'Inspect chunk usage before considering a targeted balance.'
+assert_contains "$details" 'sudo btrfs balance start -dusage=50 /data'
+
+# a missing grub-btrfs.cfg is explained, not silently dropped from details
+details=$(run_widget balanced --details --snapshots --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$details" 'attention needed · 1 warning'
+assert_contains "$details" 'snapshot  grub-btrfs.cfg is missing or unreadable at /nonexistent'
+assert_contains "$details" 'Timeshift snapshots'
+assert_contains "$details" '/nonexistent is missing or not readable by this user.'
+
+# healthy: no findings, and no stale "problem" text
+details=$(run_widget healthy --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$details" 'all systems healthy'
+assert_contains "$details" 'Nothing is flagged'
+assert_not_contains "$details" 'problems detected'
 
 printf 'system-health widget scenarios passed\n'

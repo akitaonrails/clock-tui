@@ -273,7 +273,7 @@ Example wrapper using the NERV theme:
 exec tclock-system-health --theme nerv "$@"
 ```
 
-Press `d` while the widget is visible to open details for failed or retained units, unsuccessful timer jobs, filesystems over the configured usage threshold, and Btrfs allocation and I/O state. Storage details include exact used/free values and a three-second, best-effort scan of the largest readable child directories. The command is read-only: it never resets units, deletes files, or runs a balance. `Esc` closes the popup.
+Press `d` while the widget is visible to open the details popup. It starts with a **Flagged** list — every warning or critical finding behind the dashboard verdict, worst first, tagged with the row it came from — followed by sections for failed or retained units and unsuccessful timer jobs, system state (zombie processes with their parents, load, memory), Timeshift snapshots, scheduled jobs, storage, and Btrfs allocation and I/O state. Storage details include exact used/free values and a three-second, best-effort scan of the largest readable child directories for filesystems over the warning threshold. The command is read-only: it never resets units, deletes files, or runs a balance (it only prints the commands you could run). `Esc` closes the popup.
 
 ### Screenshot example
 
