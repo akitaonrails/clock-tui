@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "clock-tui"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "chrono",
  "chrono-tz",
