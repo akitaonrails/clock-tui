@@ -61,9 +61,12 @@
 #   --left-col N                    left column visible width (default 44)
 #   --single-column                 stack all rows instead of pairing
 #   --no-btrfs                      omit the btrfs row even if btrfs is mounted
-#   --details                       explain failed/retained units, timer jobs,
-#                                   storage pressure, and btrfs allocation/I/O
-#                                   state (intended for a tclock popup action)
+#   --details                       open with the list of problems behind the
+#                                   dashboard verdict, then explain units and
+#                                   timer jobs, zombies/load/memory, timeshift
+#                                   snapshots, scheduled jobs, storage pressure,
+#                                   and btrfs allocation/I/O state (intended
+#                                   for a tclock popup action)
 #   --title TEXT                    header title (default "System Health")
 #   --theme NAME                    color theme: default, evangelion, nerv
 #                                   (default: default;
@@ -210,6 +213,24 @@ fi
 worst=0                                   # 0 ok, 1 warn, 2 crit
 bump() { [ "$1" -gt "$worst" ] && worst=$1; }
 
+# Every check that raises the verdict also records *why*, so the --details
+# popup can open with the same list of problems the dashboard summarised.
+# FINDINGS entries: "LEVEL<TAB>SECTION<TAB>MESSAGE" (message may carry ANSI).
+FINDINGS=()
+flag() {
+  local lvl=$1 section=$2
+  shift 2
+  FINDINGS+=("$lvl"$'\t'"$section"$'\t'"$*")
+  bump "$lvl"
+}
+# Per-section facts gathered by the dashboard functions, replayed in details.
+SEP=$'\x1f'          # field separator that survives empty fields (tabs collapse in read)
+TIMER_INFO=()        # "LABEL SEP UNIT SEP STATUS SEP LAST SEP NEXT SEP NOTE SEP GLYPH"
+ZOMBIES=()           # "PID<TAB>COMM<TAB>PPID<TAB>PARENT_COMM<TAB>benign|stray"
+SNAP_STATUS=""       # missing-cfg | none | ok | late | stale
+SNAP_NEWEST=""; SNAP_COUNT=0; SNAP_AGE_H=0
+SYS_LOAD="?"; SYS_CORES="?"; SYS_MEM="?"
+
 now_s=$(date +%s)
 age_hours() { echo $(( (now_s - $(date -d "$1" +%s 2>/dev/null || echo "$now_s")) / 3600 )); }
 age_days()  { echo $(( (now_s - $(date -d "$1" +%s 2>/dev/null || echo "$now_s")) / 86400 )); }
@@ -311,11 +332,15 @@ timer_line() {
     [ -n "$exit_us" ] && [ "$exit_us" != "n/a" ] && last_s=$(date -d "$exit_us" +%s 2>/dev/null || echo 0)
   fi
   if [ "$next_s" -eq 0 ] && [ "$last_s" -eq 0 ]; then
-    bump 2; printf '%s %s%-8s%s %s timer not scheduled\n' "$ER" "$LBL" "$label" "$N" "$unit"; return
+    flag 2 "$label" "$unit.timer is not scheduled — enable the timer or check that the unit exists"
+    TIMER_INFO+=("$label$SEP$unit$SEP${R}not scheduled${N}$SEP—$SEP—$SEP$SEP$ER")
+    printf '%s %s%-8s%s %s timer not scheduled\n' "$ER" "$LBL" "$label" "$N" "$unit"; return
   fi
   if [ "$last_s" -eq 0 ]; then
+    next_str=$(date -d "@$next_s" +'%b %-d' 2>/dev/null || echo '?')
+    TIMER_INFO+=("$label$SEP$unit${SEP}armed, never fired$SEP—$SEP$next_str$SEP$SEP$OK")
     printf '%s %s%-8s%s %sarmed %s· next %s%s\n' "$OK" "$LBL" "$label" "$N" "${disp:-$unit }" \
-      "$D" "$(date -d "@$next_s" +'%b %-d' 2>/dev/null || echo '?')" "$N"
+      "$D" "$next_str" "$N"
     return
   fi
   last_age=$(( (now_s - last_s) / 3600 ))
@@ -338,8 +363,17 @@ timer_line() {
       stale_h=48
     fi
   fi
-  if [ "$result" != "success" ]; then glyph=$ER; rword="${R}FAILED${N}"; note=" ${R}($result)${N}"; bump 2
-  elif [ "$last_age" -gt "$stale_h" ]; then glyph=$WA; note=" ${Y}stale${N}"; bump 1; fi
+  local status_str="${G}ok${N}" note_plain=""
+  if [ "$result" != "success" ]; then
+    glyph=$ER; rword="${R}FAILED${N}"; note=" ${R}($result)${N}"
+    status_str="${R}FAILED${N} ${D}($result)${N}"
+    flag 2 "$label" "last run of $unit.service failed ${D}(result: $result, $age_str ago)${N}"
+  elif [ "$last_age" -gt "$stale_h" ]; then
+    glyph=$WA; note=" ${Y}stale${N}"
+    status_str="${Y}stale${N}"; note_plain="allowed ${stale_h}h between runs"
+    flag 1 "$label" "last successful run of $unit was $age_str ago ${D}(stale after ${stale_h}h)${N}"
+  fi
+  TIMER_INFO+=("$label$SEP$unit$SEP$status_str$SEP$age_str ago$SEP$next_str$SEP$note_plain$SEP$glyph")
   printf '%s %s%-8s%s %s%b %s%s %s· next %s%s\n' \
     "$glyph" "$LBL" "$label" "$N" "$disp" "$rword" "$age_str" "$note" "$D" "$next_str" "$N"
 }
@@ -350,24 +384,36 @@ timer_line() {
 snapshot_line() {
   local newest count age_h glyph=$OK note="" cnote=""
   if [ ! -r "$GRUB_BTRFS_CFG" ]; then
+    SNAP_STATUS=missing-cfg
     printf '%s %s%-8s%s %s(no grub-btrfs.cfg at %s)%s\n' "$WA" "$LBL" "snapshot" "$N" "$D" "$GRUB_BTRFS_CFG" "$N"
-    bump 1; return
+    flag 1 snapshot "grub-btrfs.cfg is missing or unreadable at $GRUB_BTRFS_CFG — timeshift snapshots cannot be verified"
+    return
   fi
   newest=$(grep -oE 'timeshift-btrfs/snapshots/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}' \
     "$GRUB_BTRFS_CFG" 2>/dev/null | sed 's#.*/##' | sort -u | tail -1)
   count=$(grep -oE 'timeshift-btrfs/snapshots/[0-9_-]+' "$GRUB_BTRFS_CFG" 2>/dev/null | sort -u | wc -l)
+  SNAP_NEWEST=$newest; SNAP_COUNT=$count
   if [ -z "$newest" ]; then
-    bump 2; printf '%s %s%-8s%s no snapshots in grub-btrfs.cfg\n' "$ER" "$LBL" "snapshot" "$N"; return
+    SNAP_STATUS=none
+    flag 2 snapshot "no timeshift snapshots are listed in $GRUB_BTRFS_CFG"
+    printf '%s %s%-8s%s no snapshots in grub-btrfs.cfg\n' "$ER" "$LBL" "snapshot" "$N"; return
   fi
   local snap_date=${newest%%_*} snap_time=${newest#*_} snap_s
   snap_time=${snap_time//-/:}
   snap_s=$(date -d "$snap_date $snap_time" +%s 2>/dev/null)
   [ -n "$snap_s" ] || snap_s=$now_s
   age_h=$(( (now_s - snap_s) / 3600 ))
-  if [ "$age_h" -gt 24 ]; then glyph=$ER; note=" ${R}STALE${N}"; bump 2
-  elif [ "$age_h" -gt 3 ]; then glyph=$WA; note=" ${Y}late${N}"; bump 1; fi
+  SNAP_AGE_H=$age_h; SNAP_STATUS=ok
+  if [ "$age_h" -gt 24 ]; then
+    glyph=$ER; note=" ${R}STALE${N}"; SNAP_STATUS=stale
+    flag 2 snapshot "newest timeshift snapshot is ${age_h}h old ${D}(expected within 24h)${N}"
+  elif [ "$age_h" -gt 3 ]; then
+    glyph=$WA; note=" ${Y}late${N}"; SNAP_STATUS=late
+    flag 1 snapshot "newest timeshift snapshot is ${age_h}h old ${D}(expected within 3h)${N}"
+  fi
   if [ "$count" -gt "$SNAPSHOT_MAX" ]; then
-    cnote=" ${Y}(pruning?)${N}"; [ "$glyph" = "$OK" ] && glyph=$WA; bump 1
+    cnote=" ${Y}(pruning?)${N}"; [ "$glyph" = "$OK" ] && glyph=$WA
+    flag 1 snapshot "$count snapshots are kept, above the $SNAPSHOT_MAX limit — check timeshift pruning"
   fi
   printf '%s %s%-8s%s timeshift %sh%s %s· %s kept%s%b\n' \
     "$glyph" "$LBL" "snapshot" "$N" "$age_h" "$note" "$D" "$count" "$N" "$cnote"
@@ -427,17 +473,23 @@ jobs_line() {
   failed_total=$((failed_user + failed_sys))
   retained_total=$((retained_user + retained_sys))
   if [ "$failed_total" -gt 0 ]; then
-    glyph=$ER; bump 2
+    glyph=$ER
+    flag 2 jobs "$failed_total failed systemd unit(s) ${D}($failed_user user, $failed_sys system)${N}"
     fword="${R}$failed_total failed${N} (${failed_user}u/${failed_sys}s)"
     [ "$retained_total" -gt 0 ] \
       && fword="$fword ${D}·${N} ${Y}$retained_total retained${N} (${retained_user}u/${retained_sys}s)"
   elif [ "$retained_total" -gt 0 ]; then
-    glyph=$WA; bump 1
+    glyph=$WA
     fword="${Y}$retained_total retained${N} (${retained_user}u/${retained_sys}s)"
   else
     fword="0 failed units"
   fi
-  [ -n "$bad" ] && { [ "$glyph" = "$OK" ] && glyph=$WA; bump 1; }
+  [ "$retained_total" -gt 0 ] && flag 1 jobs \
+    "$retained_total automount unit(s) still show an old failure although the mount recovered ${D}($retained_user user, $retained_sys system)${N}"
+  if [ -n "$bad" ]; then
+    [ "$glyph" = "$OK" ] && glyph=$WA
+    flag 1 jobs "timer job(s) whose last run did not succeed:${bad}"
+  fi
   printf '%s %s%-8s%s %s timers %s·%s %b%s\n' \
     "$glyph" "$LBL" "jobs" "$N" "$timers" "$D" "$N" "$fword" \
     "$([ -n "$bad" ] && printf ' %s· fail:%s%s' "$Y" "$bad" "$N")"
@@ -483,19 +535,21 @@ detail_unit() {
   code=$(awk -F= '$1=="ExecMainCode"{print $2; exit}' <<<"$props")
   status=$(awk -F= '$1=="ExecMainStatus"{print $2; exit}' <<<"$props")
 
-  printf '%s%s%s %s[%s · %s]%s\n' "$header_color" "$unit" "$N" "$D" "$scope" "$source" "$N"
-  [ -n "$description" ] && printf '  %s\n' "$description"
-  printf '  state %s%s%s · result %s%s%s' \
-    "$Y" "${state:-unknown}" "$N" "$R" "${result:-unknown}" "$N"
+  local glyph=$ER
+  [ "$kind" = retained ] && glyph=$WA
+  printf '%s%s %s%s%s %s[%s · %s]%s\n' "$M" "$glyph" "$header_color" "$unit" "$N" "$D" "$scope" "$source" "$N"
+  [ -n "$description" ] && printf '%s%s\n' "$IND" "$description"
+  printf '%sstate %s%s%s · result %s%s%s' \
+    "$IND" "$Y" "${state:-unknown}" "$N" "$R" "${result:-unknown}" "$N"
   [ -n "$code$status" ] && printf ' · exit %s/%s' "${code:-?}" "${status:-?}"
   [ -n "$since" ] && printf ' · since %s' "$since"
   printf '\n'
 
   if [ "$kind" = retained ] && recovery=$(recovered_automount "$scope" "$unit"); then
     IFS=$'\t' read -r recovered_unit recovered_active recovered_sub recovered_result <<<"$recovery"
-    printf '  %sRecovered:%s %s is %s/%s with result %s.\n' \
-      "$G" "$N" "$recovered_unit" "$recovered_active" "$recovered_sub" "$recovered_result"
-    printf '  The resource is available; systemd is retaining the earlier automount failure.\n'
+    printf '%s%sRecovered:%s %s is %s/%s with result %s.\n' \
+      "$IND" "$G" "$N" "$recovered_unit" "$recovered_active" "$recovered_sub" "$recovered_result"
+    printf '%sThe resource is available; systemd is retaining the earlier automount failure.\n' "$IND"
   fi
 
   logs=$({
@@ -511,7 +565,7 @@ detail_unit() {
       | awk 'NF' | cut -c1-240)
   fi
   while IFS= read -r line; do
-    [ -n "$line" ] && printf '  %s%s%s\n' "$D" "$line" "$N"
+    [ -n "$line" ] && printf '%s%s%s%s\n' "$IND" "$D" "$line" "$N"
   done <<<"$logs"
   printf '\n'
 }
@@ -536,20 +590,177 @@ timer_failure_details() {
   done < <(systemctl --user list-timers --all --no-legend 2>/dev/null | awk '{print $NF}')
 }
 
-details_main() {
-  printf '%s%s — details%s\n\n' "$B" "$TITLE" "$N"
+# ---------- popup details: layout helpers ----------
+M='  '                 # left margin: keeps text off the popup border
+IND="$M  "             # indented continuation lines under an item
+RULE_W=76              # section header rule width (popup is at most 110 cols)
+
+section() {
+  local title=$1 fill
+  fill=$(( RULE_W - ${#title} - 1 ))
+  [ "$fill" -lt 4 ] && fill=4
+  printf '\n%s%s%s%s %s' "$M" "$B" "$title" "$N" "$D"
+  printf '─%.0s' $(seq 1 "$fill")
+  printf '%s\n\n' "$N"
+}
+# item GLYPH TEXT: one bullet line at the margin
+item() { printf '%s%s %s\n' "$M" "$1" "$2"; }
+# sub TEXT: continuation line under an item
+sub() { printf '%s%s\n' "$IND" "$1"; }
+# hint TEXT: dim explanatory continuation line
+hint() { printf '%s%s%s%s\n' "$IND" "$D" "$1" "$N"; }
+
+glyph_for() { case "$1" in 2) printf '%s' "$ER" ;; 1) printf '%s' "$WA" ;; *) printf '%s' "$OK" ;; esac; }
+
+# The summary at the top of the popup: exactly the problems that produced the
+# dashboard verdict, worst first, tagged with the row they came from.
+flagged_summary() {
+  local crit=0 warn=0 entry lvl sect msg verdict
+  for entry in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+    IFS=$'\t' read -r lvl _ _ <<<"$entry"
+    [ "$lvl" -eq 2 ] && crit=$((crit + 1)) || warn=$((warn + 1))
+  done
+  case $worst in
+    0) verdict="${G}●${N} ${G}all systems healthy${N}" ;;
+    1) verdict="${Y}●${N} ${Y}attention needed${N}" ;;
+    *) verdict="${R}●${N} ${R}problems detected${N}" ;;
+  esac
+  printf '\n%s%s%s%s %s·%s %s' "$M" "$B" "$TITLE" "$N" "$D" "$N" "$verdict"
+  if [ "$worst" -gt 0 ]; then
+    printf ' %s·%s ' "$D" "$N"
+    [ "$crit" -gt 0 ] && printf '%s%s critical%s' "$R" "$crit" "$N"
+    [ "$crit" -gt 0 ] && [ "$warn" -gt 0 ] && printf ', '
+    [ "$warn" -gt 0 ] && printf '%s%s warning%s%s' "$Y" "$warn" "$([ "$warn" -eq 1 ] || printf s)" "$N"
+  fi
+  printf '\n'
+
+  section "Flagged"
+  if [ ${#FINDINGS[@]} -eq 0 ]; then
+    item "$OK" "Nothing is flagged — every check passed."
+    return
+  fi
+  for lvl in 2 1; do
+    for entry in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+      IFS=$'\t' read -r l sect msg <<<"$entry"
+      [ "$l" -eq "$lvl" ] || continue
+      printf '%s%s %s%-9s%s %s\n' "$M" "$(glyph_for "$lvl")" "$LBL" "$sect" "$N" "$msg"
+    done
+  done
+  printf '\n'
+  hint "$ER critical raises the verdict to \"problems detected\"; $WA warning raises it to \"attention needed\"."
+  hint "Each entry names the dashboard row it came from. Sections below give the underlying facts."
+}
+
+unit_details() {
+  section "Units and timer jobs"
   failed_unit_details user
   failed_unit_details system
   timer_failure_details
   if [ "$detail_count" -eq 0 ]; then
-    printf '%s No failed user/system units or timer jobs found.\n\n' "$OK"
+    item "$OK" "No failed user/system units or unsuccessful timer jobs."
   else
-    [ "$detail_retained_count" -gt 0 ] && printf '%sRetained states are read-only here; reset them only after confirming recovery.%s\n' "$D" "$N"
-    [ "$detail_failed_count" -gt 0 ] && printf '%sFailed states stay visible until the unit succeeds or is reset.%s\n' "$D" "$N"
-    printf '\n'
+    [ "$detail_retained_count" -gt 0 ] && hint "Retained states are read-only here; reset them only after confirming recovery."
+    [ "$detail_failed_count" -gt 0 ] && hint "Failed states stay visible until the unit succeeds or is reset."
   fi
+}
+
+system_details() {
+  local entry pid comm ppid pcomm kind k stray=0 benign=0 g
+  section "System"
+  for entry in ${ZOMBIES[@]+"${ZOMBIES[@]}"}; do
+    IFS=$'\t' read -r _ _ _ _ kind <<<"$entry"
+    [ "$kind" = stray ] && stray=$((stray + 1)) || benign=$((benign + 1))
+  done
+  if [ "$stray" -gt 10 ]; then g=$ER; elif [ "$stray" -gt 0 ]; then g=$WA; else g=$OK; fi
+  local zword="zombie processes"; [ "$stray" -eq 1 ] && zword="zombie process"
+  item "$g" "load ${SYS_LOAD} on ${SYS_CORES} cores ${D}·${N} memory ${SYS_MEM}% in use ${D}·${N} $stray $zword ${D}(+$benign ignored as benign)${N}"
+  if [ ${#ZOMBIES[@]} -gt 0 ]; then
+    printf '\n'
+    for kind in stray benign; do
+      for entry in ${ZOMBIES[@]+"${ZOMBIES[@]}"}; do
+        IFS=$'\t' read -r pid comm ppid pcomm k <<<"$entry"
+        [ "$k" = "$kind" ] || continue
+        if [ "$kind" = stray ]; then
+          item "$WA" "$comm ${D}(pid $pid)${N} — parent $pcomm ${D}(pid $ppid)${N}"
+        else
+          item "${D}·${N}" "${D}$comm (pid $pid) — parent $pcomm (pid $ppid) — benign, ignored${N}"
+        fi
+      done
+    done
+  fi
+  if [ "$stray" -gt 0 ]; then
+    printf '\n'
+    hint "A zombie has already exited; it lingers only because its parent has not reaped it."
+    hint "Restart or stop the parent process to clear it, or ignore it if the parent is short-lived."
+    hint "Use --benign-zombie NAME to silence a process name that always leaves harmless zombies."
+  fi
+}
+
+snapshot_details() {
+  local spec want=0
+  for spec in ${LEFT_SPEC[@]+"${LEFT_SPEC[@]}"}; do [ "$spec" = snapshots ] && want=1; done
+  [ "$want" -eq 1 ] || return 0
+  section "Timeshift snapshots"
+  case "$SNAP_STATUS" in
+    missing-cfg)
+      item "$WA" "$GRUB_BTRFS_CFG is missing or not readable by this user."
+      hint "grub-btrfsd rewrites this file after every timeshift snapshot, so it doubles as proof that"
+      hint "both timeshift and grub-btrfsd are working. Without it, snapshot age cannot be verified."
+      hint "If it never existed: install/enable grub-btrfs (grub-btrfsd.service). If it exists: check read"
+      hint "permission on /boot/grub, or point --grub-btrfs-cfg at the right path." ;;
+    none)
+      item "$ER" "No timeshift snapshots are listed in $GRUB_BTRFS_CFG."
+      hint "Timeshift has not created a btrfs snapshot that grub-btrfsd picked up. Check timeshift's schedule." ;;
+    stale)
+      item "$ER" "Newest snapshot ${SNAP_NEWEST} is ${SNAP_AGE_H}h old ${D}(expected within 24h)${N} · ${SNAP_COUNT} kept ${D}(limit ${SNAPSHOT_MAX})${N}" ;;
+    late)
+      item "$WA" "Newest snapshot ${SNAP_NEWEST} is ${SNAP_AGE_H}h old ${D}(expected within 3h)${N} · ${SNAP_COUNT} kept ${D}(limit ${SNAPSHOT_MAX})${N}" ;;
+    ok)
+      item "$OK" "Newest snapshot ${SNAP_NEWEST} is ${SNAP_AGE_H}h old · ${SNAP_COUNT} kept ${D}(limit ${SNAPSHOT_MAX})${N}" ;;
+    *)
+      item "$WA" "Snapshot state was not evaluated." ;;
+  esac
+  [ "$SNAP_COUNT" -gt "$SNAPSHOT_MAX" ] \
+    && hint "More snapshots than the configured limit are kept — timeshift pruning may not be running."
+}
+
+timer_details() {
+  [ ${#TIMER_INFO[@]} -gt 0 ] || return 0
+  local entry label unit status last next note g
+  section "Scheduled jobs"
+  for entry in ${TIMER_INFO[@]+"${TIMER_INFO[@]}"}; do
+    IFS=$SEP read -r label unit status last next note g <<<"$entry"
+    printf '%s%s %s%-9s%s %s %s·%s %s %s·%s last %s %s·%s next %s%s\n' \
+      "$M" "${g:-$OK}" "$LBL" "$label" "$N" "$unit" "$D" "$N" "$status" "$D" "$N" "$last" \
+      "$D" "$N" "$next" "${note:+ ${D}($note)${N}}"
+  done
+}
+
+details_main() {
+  # Replay the dashboard checks silently so FINDINGS and the per-section
+  # facts are populated exactly as the verdict saw them.
+  local spec t_label t_unit t_stale t_name
+  for spec in ${LEFT_SPEC[@]+"${LEFT_SPEC[@]}"}; do
+    case "$spec" in
+      timer:*)
+        IFS=: read -r _ t_label t_unit t_stale t_name <<<"$spec"
+        timer_line "$t_label" "$t_unit" "$t_stale" "${t_name-}" >/dev/null ;;
+      snapshots) snapshot_line >/dev/null ;;
+    esac
+  done
+  system_line  >/dev/null
+  jobs_line    >/dev/null
+  storage_line >/dev/null
+  btrfs_line   >/dev/null
+
+  flagged_summary
+  unit_details
+  system_details
+  snapshot_details
+  timer_details
   storage_details
   btrfs_details
+  printf '\n'
 }
 
 # ---------- right column: storage (real filesystems, exclusions applied) ----------
@@ -577,7 +788,9 @@ storage_line() {
     if   [ "$pct" -ge "$DISK_CRIT" ]; then c=$R; lvl=2
     elif [ "$pct" -ge "$DISK_WARN" ]; then c=$Y; lvl=1
     else c=$G; lvl=0; fi
-    bump $lvl; [ $lvl -eq 2 ] && glyph=$ER; [ $lvl -eq 1 ] && [ "$glyph" != "$ER" ] && glyph=$WA
+    [ $lvl -gt 0 ] && flag $lvl storage \
+      "$mnt is ${pct}% full ${D}($(human_bytes "$avail") free of $(human_bytes "$size"); thresholds ${DISK_WARN}% / ${DISK_CRIT}%)${N}"
+    [ $lvl -eq 2 ] && glyph=$ER; [ $lvl -eq 1 ] && [ "$glyph" != "$ER" ] && glyph=$WA
     out="$out${out:+ ${D}·${N} }$name ${c}${pct}%${N}"
   done < <(storage_records)
   [ -n "$out" ] || out="${D}no local filesystems found${N}"
@@ -587,7 +800,7 @@ storage_line() {
 largest_directories() {
   local mnt=$1 scan scan_status bytes path shown=0 heading
   if ! command -v timeout >/dev/null 2>&1; then
-    printf '  %sLargest-directory scan unavailable (timeout is not installed).%s\n' "$D" "$N"
+    hint "Largest-directory scan unavailable (timeout is not installed)."
     return
   fi
   scan=$(timeout 3s du -x -B1 --max-depth=1 -- "$mnt" 2>/dev/null)
@@ -597,41 +810,48 @@ largest_directories() {
   else
     heading='Largest readable child directories found before the scan stopped:'
   fi
-  [ -n "$scan" ] && printf '  %s%s%s\n' "$D" "$heading" "$N"
+  [ -n "$scan" ] && hint "$heading"
   while IFS=$'\t' read -r bytes path; do
     [ -n "$bytes" ] && [ -n "$path" ] && [ "$path" != "$mnt" ] || continue
-    printf '  %s — %s\n' "$path" "$(human_bytes "$bytes")"
+    sub "$path — $(human_bytes "$bytes")"
     shown=$((shown + 1))
   done < <(sort -nr -k1,1 <<<"$scan" | head -n 5)
-  [ "$shown" -gt 0 ] || printf '  %sNo readable child-directory sizes were returned.%s\n' "$D" "$N"
+  [ "$shown" -gt 0 ] || hint "No readable child-directory sizes were returned."
   if [ "$scan_status" -eq 124 ]; then
-    printf '  %sDirectory scan stopped after 3 seconds; the list is partial.%s\n' "$D" "$N"
+    hint "Directory scan stopped after 3 seconds; the list is partial."
   elif [ "$scan_status" -ne 0 ]; then
-    printf '  %sDirectory scan was incomplete (exit %s); unreadable paths were skipped.%s\n' \
-      "$D" "$scan_status" "$N"
+    hint "Directory scan was incomplete (exit $scan_status); unreadable paths were skipped."
   fi
 }
 
 storage_details() {
-  local dev size used avail pct mnt found=0 c
+  local dev size used avail pct mnt found=0 over=0 c g
+  section "Storage"
   while IFS=$'\t' read -r dev size used avail pct mnt; do
-    [ "$pct" -ge "$DISK_WARN" ] || continue
-    if [ "$found" -eq 0 ]; then printf '%sStorage%s\n' "$B" "$N"; fi
     found=$((found + 1))
-    if [ "$pct" -ge "$DISK_CRIT" ]; then c=$R; else c=$Y; fi
-    printf '%s%s%s — %s%s%%%s used (%s / %s, %s free)\n' \
-      "$c" "$mnt" "$N" "$c" "$pct" "$N" \
+    if   [ "$pct" -ge "$DISK_CRIT" ]; then c=$R; g=$ER; over=$((over + 1))
+    elif [ "$pct" -ge "$DISK_WARN" ]; then c=$Y; g=$WA; over=$((over + 1))
+    else c=$G; g=$OK; fi
+    printf '%s%s %s — %s%s%%%s used (%s / %s, %s free)\n' \
+      "$M" "$g" "$mnt" "$c" "$pct" "$N" \
       "$(human_bytes "$used")" "$(human_bytes "$size")" "$(human_bytes "$avail")"
-    largest_directories "$mnt"
-    printf '\n'
+    if [ "$pct" -ge "$DISK_WARN" ]; then
+      largest_directories "$mnt"
+      printf '\n'
+    fi
   done < <(storage_records)
-  [ "$found" -gt 0 ] || printf '%s No filesystems meet the %s%% warning threshold.\n\n' "$OK" "$DISK_WARN"
+  if [ "$found" -eq 0 ]; then
+    item "$WA" "No local filesystems found."
+  elif [ "$over" -eq 0 ]; then
+    printf '\n'
+    hint "All filesystems are below the ${DISK_WARN}% warning threshold (critical at ${DISK_CRIT}%)."
+  fi
 }
 
 # ---------- right column: system (zombies, load, memory) ----------
 system_line() {
-  local z=0 benign=0 zpid zcomm load cores memp glyph=$OK zc=$G note="" bz match
-  while read -r zpid zcomm; do
+  local z=0 benign=0 zpid zppid zcomm pcomm load cores memp glyph=$OK zc=$G note="" bz match kind stray=""
+  while read -r zpid zppid zcomm; do
     match=0
     for bz in ${BENIGN_ZOMBIES[@]+"${BENIGN_ZOMBIES[@]}"}; do
       [ "$zcomm" = "$bz" ] && { match=1; break; }
@@ -640,13 +860,18 @@ system_line() {
     if [ "$match" = 0 ] && grep -q ':/system.slice/docker-' "/proc/$zpid/cgroup" 2>/dev/null; then
       match=1
     fi
-    if [ "$match" = 1 ]; then benign=$((benign+1)); else z=$((z+1)); fi
-  done < <(ps -eo pid=,stat=,comm= 2>/dev/null | awk '$2 ~ /^Z/ {print $1, $3}')
+    if [ "$match" = 1 ]; then benign=$((benign+1)); kind=benign
+    else z=$((z+1)); kind=stray; stray="$stray${stray:+, }$zcomm ${D}(pid $zpid)${N}"; fi
+    pcomm=$(ps -o comm= -p "$zppid" 2>/dev/null || true)
+    ZOMBIES+=("$zpid"$'\t'"$zcomm"$'\t'"$zppid"$'\t'"${pcomm:-?}"$'\t'"$kind")
+  done < <(ps -eo pid=,ppid=,stat=,comm= 2>/dev/null | awk '$3 ~ /^Z/ {print $1, $2, $4}')
   load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo '?')
   cores=$(nproc 2>/dev/null || echo '?')
   memp=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{if (t>0) printf "%d", (t-a)*100/t}' /proc/meminfo 2>/dev/null)
-  if [ "$z" -gt 10 ]; then glyph=$ER; zc=$R; bump 2
-  elif [ "$z" -gt 0 ]; then glyph=$WA; zc=$Y; bump 1; fi
+  SYS_LOAD=$load; SYS_CORES=$cores; SYS_MEM=${memp:-?}
+  if [ "$z" -gt 10 ]; then glyph=$ER; zc=$R; flag 2 system "$z zombie processes: $stray"
+  elif [ "$z" -gt 1 ]; then glyph=$WA; zc=$Y; flag 1 system "$z zombie processes: $stray"
+  elif [ "$z" -eq 1 ]; then glyph=$WA; zc=$Y; flag 1 system "1 zombie process: $stray"; fi
   [ "$benign" -gt 0 ] && note=" ${D}(+$benign)${N}"
   printf '%s %s%-8s%s %b%s zombies%b%b %s·%s load %s/%s %s·%s mem %s%%\n' \
     "$glyph" "$LBL" "system" "$N" "$zc" "$z" "$N" "$note" "$D" "$N" "$load" "$cores" "$D" "$N" "${memp:-?}"
@@ -711,8 +936,12 @@ btrfs_line() {
     fi
     days=$(age_days "$last_us")
     res=$(systemctl show "btrfs-scrub@$esc.service" -p Result --value 2>/dev/null)
-    c=$G; [ "$days" -gt 40 ] && { c=$Y; lvl=1; }
-    [ "$res" != "success" ] && [ -n "$res" ] && { c=$R; lvl=2; }
+    c=$G
+    if [ "$res" != "success" ] && [ -n "$res" ]; then
+      c=$R; lvl=2; flag 2 btrfs "scrub of $mnt failed ${D}(result: $res)${N}"
+    elif [ "$days" -gt 40 ]; then
+      c=$Y; lvl=1; flag 1 btrfs "scrub of $mnt last ran ${days}d ago ${D}(expected within 40d)${N}"
+    fi
     scrub="$scrub${scrub:+ }$label ${c}${days}d${N}"
   done <<<"$fs_list"
   # trim: weekly fstrim.timer (discard=async may run inline too; this is the sweep)
@@ -721,8 +950,12 @@ btrfs_line() {
   if [ -n "$last_us" ] && [ "$last_us" != "n/a" ]; then
     days=$(age_days "$last_us")
     res=$(systemctl show fstrim.service -p Result --value 2>/dev/null)
-    c=$G; [ "$days" -gt 10 ] && { c=$Y; lvl=$((lvl > 1 ? lvl : 1)); }
-    [ "$res" != "success" ] && [ -n "$res" ] && { c=$R; lvl=2; }
+    c=$G
+    if [ "$res" != "success" ] && [ -n "$res" ]; then
+      c=$R; lvl=2; flag 2 btrfs "fstrim failed ${D}(result: $res)${N}"
+    elif [ "$days" -gt 10 ]; then
+      c=$Y; lvl=$((lvl > 1 ? lvl : 1)); flag 1 btrfs "fstrim last ran ${days}d ago ${D}(expected weekly)${N}"
+    fi
     trim="${c}${days}d${N}"
   fi
   # Low unallocated device space only suggests balance while the filesystem
@@ -737,11 +970,13 @@ btrfs_line() {
     case "$state" in
       critical)
         allocation_seen=1
+        flag 2 btrfs "$mnt has only ${pct}% of its device unallocated ${D}($(human_bytes "$unallocated") of $(human_bytes "$size"), yet $(human_bytes "$free") free) — below the 8% critical mark${N}"
         if [ "$action_lvl" -lt 2 ] || [ "$pct" -lt "$action_pct" ]; then
           action_lvl=2; action_pct=$pct; action_fs=$label
         fi ;;
       warn)
         allocation_seen=1
+        flag 1 btrfs "$mnt has only ${pct}% of its device unallocated ${D}($(human_bytes "$unallocated") of $(human_bytes "$size"), yet $(human_bytes "$free") free) — below the 15% comfort mark${N}"
         if [ "$action_lvl" -eq 0 ] || { [ "$action_lvl" -eq 1 ] && [ "$pct" -lt "$action_pct" ]; }; then
           action_lvl=1; action_pct=$pct; action_fs=$label
         fi ;;
@@ -760,11 +995,15 @@ btrfs_line() {
     alloc="${D}$capacity_fs capacity-bound${N}"
   elif [ "$allocation_seen" -eq 0 ] || [ "$unknown" -eq 1 ]; then
     alloc="${Y}unknown${N}"; lvl=$((lvl > 1 ? lvl : 1))
+    flag 1 btrfs "allocation state could not be read for at least one filesystem ${D}(btrfs filesystem usage failed)${N}"
   fi
   bump $lvl
   [ $lvl -eq 1 ] && glyph=$WA; [ $lvl -eq 2 ] && glyph=$ER
-  if [ "$errs" -gt 0 ]; then glyph=$ER; bump 2; fi
-  if [ "$io_unknown" -eq 1 ]; then [ "$glyph" = "$OK" ] && glyph=$WA; bump 1; fi
+  if [ "$errs" -gt 0 ]; then glyph=$ER; flag 2 btrfs "$errs device I/O error(s) recorded across btrfs filesystems"; fi
+  if [ "$io_unknown" -eq 1 ]; then
+    [ "$glyph" = "$OK" ] && glyph=$WA
+    flag 1 btrfs "device error counters could not be read for at least one filesystem ${D}(no accessible mountpoint)${N}"
+  fi
   printf '%s %s%-8s%s scrub: %b %s·%s trim %b %s·%s alloc %b %s·%s %b io errors\n' \
     "$glyph" "$LBL" "btrfs" "$N" "$scrub" "$D" "$N" "$trim" "$D" "$N" "$alloc" "$D" "$N" \
     "$([ "$errs" -gt 0 ] && printf '%s%s%s' "$R" "$errs" "$N" || { [ "$io_unknown" -eq 1 ] && printf '%sunknown%s' "$Y" "$N" || printf '%s0%s' "$G" "$N"; })"
@@ -776,7 +1015,8 @@ btrfs_details() {
   local fs_list mnt label esc smnt stats errors info state pct used_pct size unallocated free
   fs_list=$(btrfs_filesystems)
   [ -n "$fs_list" ] || return 0
-  printf '%sBtrfs allocation and I/O%s\n' "$B" "$N"
+  local g pc ec explain=0
+  section "Btrfs allocation and I/O"
   while IFS=: read -r mnt label esc smnt; do
     [ -n "$smnt" ] || smnt=$mnt
     info=$(btrfs_allocation_info "$smnt")
@@ -786,24 +1026,42 @@ btrfs_details() {
     else
       errors=unknown
     fi
-    printf '%s — %s%% used; %s unallocated of %s; %s filesystem free; I/O errors: %s\n' \
-      "$mnt" "$used_pct" "$(human_bytes "$unallocated")" "$(human_bytes "$size")" \
-      "$(human_bytes "$free")" "$errors"
+    case "$state" in
+      critical) g=$ER; pc=$R ;;
+      warn|capacity|unknown) g=$WA; pc=$Y ;;
+      *) g=$OK; pc=$G ;;
+    esac
+    if [ "$errors" = unknown ]; then ec=$Y; [ "$g" = "$OK" ] && g=$WA
+    elif [ "$errors" != 0 ]; then ec=$R; g=$ER
+    else ec=$G; fi
+    printf '%s%s %s — %s%% used %s·%s %s%s%% unallocated%s %s(%s of %s)%s %s·%s %s free %s·%s I/O errors: %s%s%s\n' \
+      "$M" "$g" "$mnt" "$used_pct" "$D" "$N" "$pc" "$pct" "$N" \
+      "$D" "$(human_bytes "$unallocated")" "$(human_bytes "$size")" "$N" \
+      "$D" "$N" "$(human_bytes "$free")" "$D" "$N" "$ec" "$errors" "$N"
     case "$state" in
       capacity)
-        printf '  Low unallocated device space is a consequence of filesystem capacity pressure.\n'
-        printf '  Delete or move data first; balancing does not create free space.\n' ;;
+        sub "Low unallocated device space is a consequence of filesystem capacity pressure."
+        sub "Delete or move data first; balancing does not create free space." ;;
       critical|warn)
-        printf '  Low unallocated device space despite ordinary free space suggests sparse chunks.\n'
-        printf '  Inspect chunk usage before considering a targeted balance.\n' ;;
+        explain=1
+        sub "Low unallocated device space despite ordinary free space suggests sparse chunks."
+        sub "Inspect chunk usage before considering a targeted balance."
+        hint "Inspect:  sudo btrfs filesystem usage $mnt"
+        hint "Reclaim:  sudo btrfs balance start -dusage=50 $mnt   (compacts half-empty data chunks)" ;;
       unknown)
-        printf '  %sAllocation details could not be read.%s\n' "$Y" "$N" ;;
+        sub "${Y}Allocation details could not be read.${N}" ;;
     esac
     [ "$errors" != 0 ] && [ "$errors" != unknown ] \
-      && printf '  %sNonzero device error counters require investigation.%s\n' "$R" "$N"
-    [ "$errors" = unknown ] && printf '  %sDevice error counters could not be read.%s\n' "$Y" "$N"
-    printf '\n'
+      && sub "${R}Nonzero device error counters require investigation.${N}"
+    [ "$errors" = unknown ] && sub "${Y}Device error counters could not be read.${N}"
+    # healthy entries stay compact; only annotated ones get breathing room
+    [ "$state" = ok ] && [ "$errors" = 0 ] || printf '\n'
   done <<<"$fs_list"
+  if [ "$explain" -eq 1 ]; then
+    hint "\"Unallocated\" is raw device space not yet assigned to any data/metadata chunk. Btrfs needs it"
+    hint "to grow metadata or create new chunks; when it runs out, writes can fail with ENOSPC even"
+    hint "though df still reports free space. Below 15% is a warning, below 8% is critical."
+  fi
 }
 
 # ---------- assembly ----------
