@@ -33,38 +33,18 @@ pub enum Mode {
         /// Custom timezone, for example "America/New_York"; uses the local timezone if not specified
         #[arg(short = 'z', long, value_parser = parse_timezone)]
         timezone: Option<Tz>,
-        /// Do not show date
-        #[arg(short = 'D', long, action)]
-        no_date: bool,
-        /// Do not show seconds
-        #[arg(short = 'S', long, action)]
-        no_seconds: bool,
-        /// Show fractional seconds
-        #[arg(short, long, action)]
-        millis: bool,
     },
     /// The timer mode displays the remaining time until the timer is finished.
     Timer {
         /// Initial duration for timer, value can be 10s for 10 seconds, 1m for 1 minute, etc.
-        /// Also accepts multiple duration values and runs the timers sequentially, eg. 25m 5m
-        #[arg(short, long = "duration", value_parser = parse_duration, num_args = 1.., default_value = "5m")]
+        /// Also accepts multiple duration values and runs the timers sequentially, eg. 25m 5m.
+        /// Falls back to `[timer] durations` from the config, then 5m.
+        #[arg(short, long = "duration", value_parser = parse_duration, num_args = 1..)]
         durations: Vec<Duration>,
-
-        /// Set the title for the timer; accepts multiple titles corresponding to each duration
-        #[arg(short, long = "title", num_args = 0..)]
-        titles: Vec<String>,
 
         /// Restart the timer when timer is over
         #[arg(long, short, action)]
         repeat: bool,
-
-        /// Hide fractional seconds
-        #[arg(long = "no-millis", short = 'M', action)]
-        no_millis: bool,
-
-        /// Start the timer paused
-        #[arg(long = "paused", short = 'P', action)]
-        paused: bool,
 
         /// Auto quit when time is up
         #[arg(long = "quit", short = 'Q', action)]
@@ -82,25 +62,175 @@ pub enum Mode {
         #[arg(long, short, value_parser = parse_datetime)]
         time: DateTime<Local>,
 
-        /// Title or description for countdown show in header
-        #[arg(long, short = 'T')]
-        title: Option<String>,
-
         /// Continue counting down after passing the target time
-        #[arg(long = "continue", short = 'c', action)]
+        #[arg(long = "continue", short = 'C', action)]
         continue_on_zero: bool,
 
         /// Reverse the countdown, a.k.a. countup
         #[arg(long, short, action)]
         reverse: bool,
-
-        /// Show fractional seconds
-        #[arg(short, long, action)]
-        millis: bool,
     },
 }
 
-use crate::config::{Config, TimerConfig};
+/// Display options accepted by every mode, before or after the mode name.
+///
+/// Each flag is optional. When absent, the value comes from the mode's config
+/// section, then `[default]`, then the built-in default for that mode.
+#[derive(clap::Args, Debug, Default, Clone, PartialEq, Eq)]
+pub struct DisplayArgs {
+    /// Header text shown above the digits. Timer mode accepts one title per duration.
+    #[arg(short = 'T', long = "title", value_name = "TITLE", num_args = 1.., action = clap::ArgAction::Append, global = true)]
+    pub titles: Vec<String>,
+
+    /// Show seconds (overrides `show_seconds = false` in the config)
+    #[arg(long, action, global = true, overrides_with = "no_seconds")]
+    pub seconds: bool,
+
+    /// Hide seconds; every mode then shows hours and minutes only
+    #[arg(short = 'S', long, action, global = true, overrides_with = "seconds")]
+    pub no_seconds: bool,
+
+    /// Show fractional seconds
+    #[arg(short = 'm', long, action, global = true, overrides_with = "no_millis")]
+    pub millis: bool,
+
+    /// Hide fractional seconds
+    #[arg(short = 'M', long, action, global = true, overrides_with = "millis")]
+    pub no_millis: bool,
+
+    /// Show the date line (clock mode)
+    #[arg(long, action, global = true, overrides_with = "no_date")]
+    pub date: bool,
+
+    /// Hide the date line (clock mode)
+    #[arg(short = 'D', long, action, global = true, overrides_with = "date")]
+    pub no_date: bool,
+
+    /// Start paused (timer and stopwatch modes)
+    #[arg(short = 'P', long, action, global = true)]
+    pub paused: bool,
+}
+
+impl DisplayArgs {
+    fn show_seconds(&self) -> Option<bool> {
+        flag_pair(self.seconds, self.no_seconds)
+    }
+
+    fn show_millis(&self) -> Option<bool> {
+        flag_pair(self.millis, self.no_millis)
+    }
+
+    fn show_date(&self) -> Option<bool> {
+        flag_pair(self.date, self.no_date)
+    }
+
+    fn start_paused(&self) -> Option<bool> {
+        self.paused.then_some(true)
+    }
+}
+
+/// Collapse a `--flag` / `--no-flag` pair into an explicit choice, or `None`
+/// when neither was given. clap's `overrides_with` guarantees at most one is set.
+fn flag_pair(on: bool, off: bool) -> Option<bool> {
+    if on {
+        Some(true)
+    } else if off {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Built-in display defaults for one mode, used when neither the command line
+/// nor the config says otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModeDefaults {
+    show_date: bool,
+    show_seconds: bool,
+    show_millis: bool,
+}
+
+const CLOCK_DEFAULTS: ModeDefaults = ModeDefaults {
+    show_date: true,
+    show_seconds: true,
+    show_millis: false,
+};
+const TIMER_DEFAULTS: ModeDefaults = ModeDefaults {
+    show_date: false,
+    show_seconds: true,
+    show_millis: true,
+};
+const STOPWATCH_DEFAULTS: ModeDefaults = ModeDefaults {
+    show_date: false,
+    show_seconds: true,
+    show_millis: true,
+};
+const COUNTDOWN_DEFAULTS: ModeDefaults = ModeDefaults {
+    show_date: false,
+    show_seconds: true,
+    show_millis: false,
+};
+
+/// Display options after precedence has been applied for one mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DisplayOptions {
+    titles: Vec<String>,
+    show_date: bool,
+    show_seconds: bool,
+    show_millis: bool,
+    start_paused: bool,
+}
+
+impl DisplayOptions {
+    /// Precedence, highest first: command-line flag, the mode's config
+    /// section, `[default]`, then the built-in default for the mode.
+    /// `mode_titles` lets the timer pass its per-duration `titles` list.
+    fn resolve(
+        args: &DisplayArgs,
+        mode: Option<&DisplayConfig>,
+        default: Option<&DisplayConfig>,
+        builtin: ModeDefaults,
+        mode_titles: Vec<String>,
+    ) -> Self {
+        let pick = |cli: Option<bool>, get: fn(&DisplayConfig) -> Option<bool>, fallback: bool| {
+            cli.or_else(|| mode.and_then(get))
+                .or_else(|| default.and_then(get))
+                .unwrap_or(fallback)
+        };
+        let titles = if !args.titles.is_empty() {
+            args.titles.clone()
+        } else if !mode_titles.is_empty() {
+            mode_titles
+        } else {
+            mode.and_then(|c| c.title.clone())
+                .or_else(|| default.and_then(|c| c.title.clone()))
+                .into_iter()
+                .collect()
+        };
+
+        Self {
+            titles,
+            show_date: pick(args.show_date(), |c| c.show_date, builtin.show_date),
+            show_seconds: pick(
+                args.show_seconds(),
+                |c| c.show_seconds,
+                builtin.show_seconds,
+            ),
+            show_millis: pick(args.show_millis(), |c| c.show_millis, builtin.show_millis),
+            start_paused: pick(args.start_paused(), |c| c.start_paused, false),
+        }
+    }
+
+    fn title(&self) -> Option<String> {
+        self.titles.first().cloned()
+    }
+
+    fn duration_format(&self) -> DurationFormat {
+        DurationFormat::from_display(self.show_seconds, self.show_millis)
+    }
+}
+
+use crate::config::{Config, DisplayConfig, TimerConfig};
 
 const DEFAULT_CLOCK_SIZE: u16 = 1;
 const DEFAULT_TIMER_WORK_MINUTES: i64 = 25;
@@ -115,15 +245,18 @@ pub struct App {
     /// Foreground color of the clock, possible values are:
     ///     a) Any one of: Black, Red, Green, Yellow, Blue, Magenta, Cyan, Gray, DarkGray, LightRed, LightGreen, LightYellow, LightBlue, LightMagenta, LightCyan, White.
     ///     b) Hexadecimal color code: #RRGGBB.
-    #[arg(short, long, value_parser = parse_color)]
+    #[arg(short, long, value_parser = parse_color, global = true)]
     pub color: Option<Color>,
     /// Size of the clock, should be a positive integer (>=1).
-    #[arg(short, long, value_parser = parse_size)]
+    #[arg(short, long, value_parser = parse_size, global = true)]
     pub size: Option<u16>,
 
     /// Initial clock/widget theme, for example "default", "evangelion", or "nerv". Falls back to TCLOCK_WIDGET_THEME, then config.
-    #[arg(long, value_parser = parse_theme_name)]
+    #[arg(long, value_parser = parse_theme_name, global = true)]
     pub theme: Option<String>,
+
+    #[command(flatten)]
+    pub display: DisplayArgs,
 
     #[arg(skip)]
     clock: Option<Clock>,
@@ -145,6 +278,7 @@ impl App {
         // Load config
         let config = Config::load();
         let default_config = config.as_ref().map(|c| &c.default);
+        let default_display = default_config.map(|c| &c.display);
 
         self.clock = None;
         self.timer = None;
@@ -153,47 +287,7 @@ impl App {
 
         // default mode
         if self.mode.is_none() {
-            self.mode = default_config.map(|c| match c.mode.as_str() {
-                "timer" => {
-                    let timer_config = config.as_ref().map(|c| &c.timer);
-                    Mode::Timer {
-                        durations: timer_config
-                            .map(configured_timer_durations)
-                            .unwrap_or_else(default_timer_config_durations),
-                        titles: timer_config.map(|c| c.titles.clone()).unwrap_or_default(),
-                        repeat: timer_config.map(|c| c.repeat).unwrap_or(false),
-                        no_millis: !timer_config.map(|c| c.show_millis).unwrap_or(true),
-                        paused: timer_config.map(|c| c.start_paused).unwrap_or(false),
-                        auto_quit: timer_config.map(|c| c.auto_quit).unwrap_or(false),
-                        execute: timer_config.map(|c| c.execute.clone()).unwrap_or_default(),
-                    }
-                }
-                "stopwatch" => Mode::Stopwatch,
-                "countdown" => {
-                    let countdown_config = config.as_ref().map(|c| &c.countdown);
-                    Mode::Countdown {
-                        time: countdown_config
-                            .and_then(|c| c.time.as_ref())
-                            .and_then(|t| parse_datetime(t).ok())
-                            .unwrap_or_else(Local::now),
-                        title: countdown_config.map(|c| c.title.clone()).unwrap_or(None),
-                        continue_on_zero: countdown_config
-                            .map(|c| c.continue_on_zero)
-                            .unwrap_or(false),
-                        reverse: countdown_config.map(|c| c.reverse).unwrap_or(false),
-                        millis: countdown_config.map(|c| c.show_millis).unwrap_or(false),
-                    }
-                }
-                _ => {
-                    let clock_config = config.as_ref().map(|c| &c.clock);
-                    Mode::Clock {
-                        no_date: !clock_config.map(|c| c.show_date).unwrap_or(true),
-                        millis: clock_config.map(|c| c.show_millis).unwrap_or(false),
-                        no_seconds: !clock_config.map(|c| c.show_seconds).unwrap_or(true),
-                        timezone: clock_config.and_then(|c| c.timezone),
-                    }
-                }
-            });
+            self.mode = Some(default_mode(config.as_ref()));
         }
 
         // set default color and size
@@ -212,20 +306,16 @@ impl App {
         let style = Style::default().fg(self.color.unwrap_or(Color::Green));
         let size = self.size.unwrap_or(DEFAULT_CLOCK_SIZE);
 
-        // initialize the clock mode
-        match self.mode.as_ref().unwrap_or(&Mode::Clock {
-            no_date: false,
-            millis: false,
-            no_seconds: false,
-            timezone: None,
-        }) {
-            Mode::Clock {
-                no_date,
-                no_seconds,
-                millis,
-                timezone,
-            } => {
+        match self.mode.as_ref().expect("mode is set above") {
+            Mode::Clock { timezone } => {
                 let clock_config = config.as_ref().map(|c| &c.clock);
+                let display = DisplayOptions::resolve(
+                    &self.display,
+                    clock_config.map(|c| &c.display),
+                    default_display,
+                    CLOCK_DEFAULTS,
+                    Vec::new(),
+                );
                 let widget_themes = resolve_widget_themes(
                     self.theme.as_deref(),
                     std::env::var(WIDGET_THEME_ENV).ok().as_deref(),
@@ -236,9 +326,10 @@ impl App {
                 self.clock = Some(Clock::new(
                     size,
                     style,
-                    !no_date && clock_config.map(|c| c.show_date).unwrap_or(true),
-                    *millis || clock_config.map(|c| c.show_millis).unwrap_or(false),
-                    !no_seconds && clock_config.map(|c| c.show_seconds).unwrap_or(true),
+                    display.title(),
+                    display.show_date,
+                    display.show_millis,
+                    display.show_seconds,
                     timezone.or_else(|| clock_config.and_then(|c| c.timezone)),
                     clock_config.map(|c| c.widgets.clone()).unwrap_or_default(),
                     widget_themes,
@@ -246,57 +337,82 @@ impl App {
             }
             Mode::Timer {
                 durations,
-                titles,
                 repeat,
-                no_millis,
-                paused,
                 auto_quit,
                 execute,
             } => {
                 let timer_config = config.as_ref().map(|c| &c.timer);
-                let format = if *no_millis {
-                    DurationFormat::HourMinSec
+                let display = DisplayOptions::resolve(
+                    &self.display,
+                    timer_config.map(|c| &c.display),
+                    default_display,
+                    TIMER_DEFAULTS,
+                    timer_config.map(|c| c.titles.clone()).unwrap_or_default(),
+                );
+                let durations = if durations.is_empty() {
+                    timer_config
+                        .map(configured_timer_durations)
+                        .unwrap_or_else(default_timer_config_durations)
                 } else {
-                    DurationFormat::HourMinSecDeci
+                    durations.clone()
+                };
+                let execute = if execute.is_empty() {
+                    timer_config.map(|c| c.execute.clone()).unwrap_or_default()
+                } else {
+                    execute.clone()
                 };
                 self.timer = Some(Timer::new(
                     size,
                     style,
-                    durations.to_owned(),
-                    titles.to_owned(),
+                    durations,
+                    display.titles.clone(),
                     *repeat || timer_config.map(|c| c.repeat).unwrap_or(false),
-                    format,
-                    *paused || timer_config.map(|c| c.start_paused).unwrap_or(false),
+                    display.duration_format(),
+                    display.start_paused,
                     *auto_quit || timer_config.map(|c| c.auto_quit).unwrap_or(false),
-                    execute.to_owned(),
+                    execute,
                 ));
             }
             Mode::Stopwatch => {
-                self.stopwatch = Some(Stopwatch::new(size, style));
+                let display = DisplayOptions::resolve(
+                    &self.display,
+                    config.as_ref().map(|c| &c.stopwatch.display),
+                    default_display,
+                    STOPWATCH_DEFAULTS,
+                    Vec::new(),
+                );
+                self.stopwatch = Some(Stopwatch::new(
+                    size,
+                    style,
+                    display.title(),
+                    display.duration_format(),
+                    display.start_paused,
+                ));
             }
             Mode::Countdown {
                 time,
-                title,
                 continue_on_zero,
                 reverse,
-                millis,
             } => {
                 let countdown_config = config.as_ref().map(|c| &c.countdown);
+                let display = DisplayOptions::resolve(
+                    &self.display,
+                    countdown_config.map(|c| &c.display),
+                    default_display,
+                    COUNTDOWN_DEFAULTS,
+                    Vec::new(),
+                );
                 self.countdown = Some(Countdown {
                     size,
                     style,
                     time: *time,
-                    title: title.to_owned(),
+                    title: display.title(),
                     continue_on_zero: *continue_on_zero
                         || countdown_config
                             .map(|c| c.continue_on_zero)
                             .unwrap_or(false),
                     reverse: *reverse || countdown_config.map(|c| c.reverse).unwrap_or(false),
-                    format: if *millis || countdown_config.map(|c| c.show_millis).unwrap_or(false) {
-                        DurationFormat::HourMinSecDeci
-                    } else {
-                        DurationFormat::HourMinSec
-                    },
+                    format: display.duration_format(),
                 })
             }
         }
@@ -391,6 +507,32 @@ impl App {
 fn handle_key<T: Pause>(widget: &mut T, key: KeyCode) {
     if let KeyCode::Char(' ') = key {
         widget.toggle_paused()
+    }
+}
+
+/// The mode to start in when none was given on the command line: `[default]
+/// mode` from the config, falling back to the clock. Mode-specific values
+/// (durations, countdown target) come from the config too; display options
+/// are resolved later in `init_app`, so they are not repeated here.
+fn default_mode(config: Option<&Config>) -> Mode {
+    let mode_name = config.map(|c| c.default.mode.as_str()).unwrap_or("clock");
+    match mode_name {
+        "timer" => Mode::Timer {
+            durations: Vec::new(),
+            repeat: false,
+            auto_quit: false,
+            execute: Vec::new(),
+        },
+        "stopwatch" => Mode::Stopwatch,
+        "countdown" => Mode::Countdown {
+            time: config
+                .and_then(|c| c.countdown.time.as_deref())
+                .and_then(|t| parse_datetime(t).ok())
+                .unwrap_or_else(Local::now),
+            continue_on_zero: false,
+            reverse: false,
+        },
+        _ => Mode::Clock { timezone: None },
     }
 }
 
@@ -624,11 +766,155 @@ mod tests {
     }
 
     #[test]
+    fn command_line_definition_passes_clap_self_checks() {
+        // Catches duplicate short/long flags across the global display options
+        // and every subcommand. clap only runs these asserts in debug builds,
+        // so a collision would otherwise ship silently in release binaries.
+        use clap::CommandFactory;
+        App::command().debug_assert();
+    }
+
+    #[test]
     fn app_accepts_theme_option() {
         let app = App::try_parse_from(["tclock", "--theme", "nerv"]).unwrap();
 
         assert_eq!(app.theme.as_deref(), Some("nerv"));
         assert!(App::try_parse_from(["tclock", "--theme", ""]).is_err());
+    }
+
+    fn display_config(
+        title: Option<&str>,
+        show_seconds: Option<bool>,
+        show_millis: Option<bool>,
+    ) -> DisplayConfig {
+        DisplayConfig {
+            title: title.map(str::to_string),
+            show_date: None,
+            show_seconds,
+            show_millis,
+            start_paused: None,
+        }
+    }
+
+    #[test]
+    fn display_flags_are_accepted_by_every_mode_before_or_after_the_mode() {
+        let app = App::try_parse_from(["tclock", "stopwatch", "--no-seconds", "--title", "Focus"])
+            .unwrap();
+        assert!(matches!(app.mode, Some(Mode::Stopwatch)));
+        assert_eq!(app.display.show_seconds(), Some(false));
+        assert_eq!(app.display.titles, vec!["Focus"]);
+
+        let app =
+            App::try_parse_from(["tclock", "--no-millis", "-P", "timer", "-d", "10m"]).unwrap();
+        assert!(matches!(app.mode, Some(Mode::Timer { .. })));
+        assert_eq!(app.display.show_millis(), Some(false));
+        assert_eq!(app.display.start_paused(), Some(true));
+
+        let app = App::try_parse_from(["tclock", "clock", "-D", "-S", "--color", "red"]).unwrap();
+        assert_eq!(app.display.show_date(), Some(false));
+        assert_eq!(app.display.show_seconds(), Some(false));
+        assert_eq!(app.color, Some(Color::Red));
+    }
+
+    #[test]
+    fn later_display_flag_wins_over_its_opposite() {
+        let app = App::try_parse_from(["tclock", "--millis", "--no-millis"]).unwrap();
+        assert_eq!(app.display.show_millis(), Some(false));
+
+        let app = App::try_parse_from(["tclock", "--no-seconds", "--seconds"]).unwrap();
+        assert_eq!(app.display.show_seconds(), Some(true));
+
+        let app = App::try_parse_from(["tclock"]).unwrap();
+        assert_eq!(app.display.show_seconds(), None);
+        assert_eq!(app.display.show_millis(), None);
+        assert_eq!(app.display.show_date(), None);
+        assert_eq!(app.display.start_paused(), None);
+    }
+
+    #[test]
+    fn timer_titles_accept_repeated_and_multi_value_forms() {
+        let app = App::try_parse_from([
+            "tclock", "timer", "-d", "25m", "5m", "--title", "Focus", "Break",
+        ])
+        .unwrap();
+        assert_eq!(app.display.titles, vec!["Focus", "Break"]);
+
+        let app = App::try_parse_from(["tclock", "timer", "--title", "Focus", "--title", "Break"])
+            .unwrap();
+        assert_eq!(app.display.titles, vec!["Focus", "Break"]);
+    }
+
+    #[test]
+    fn display_precedence_is_cli_then_mode_then_default_then_builtin() {
+        let mode = display_config(Some("Mode title"), Some(false), None);
+        let default = display_config(Some("Default title"), Some(true), Some(false));
+
+        // Built-in defaults only.
+        let display = DisplayOptions::resolve(
+            &DisplayArgs::default(),
+            None,
+            None,
+            STOPWATCH_DEFAULTS,
+            Vec::new(),
+        );
+        assert_eq!(display.titles, Vec::<String>::new());
+        assert!(display.show_seconds);
+        assert!(display.show_millis);
+        assert!(!display.start_paused);
+
+        // `[default]` fills what the mode section leaves unset.
+        let display = DisplayOptions::resolve(
+            &DisplayArgs::default(),
+            Some(&mode),
+            Some(&default),
+            STOPWATCH_DEFAULTS,
+            Vec::new(),
+        );
+        assert_eq!(display.titles, vec!["Mode title"]);
+        assert!(!display.show_seconds);
+        assert!(!display.show_millis);
+
+        // A command-line flag beats both config layers.
+        let args = DisplayArgs {
+            seconds: true,
+            titles: vec!["CLI".to_string()],
+            ..DisplayArgs::default()
+        };
+        let display = DisplayOptions::resolve(
+            &args,
+            Some(&mode),
+            Some(&default),
+            STOPWATCH_DEFAULTS,
+            Vec::new(),
+        );
+        assert_eq!(display.titles, vec!["CLI"]);
+        assert!(display.show_seconds);
+        assert_eq!(display.duration_format(), DurationFormat::HourMinSec);
+
+        // Timer `titles` beat a single `title`, and the first title is the header.
+        let display = DisplayOptions::resolve(
+            &DisplayArgs::default(),
+            Some(&mode),
+            Some(&default),
+            TIMER_DEFAULTS,
+            vec!["Work".to_string(), "Rest".to_string()],
+        );
+        assert_eq!(display.titles, vec!["Work", "Rest"]);
+        assert_eq!(display.title().as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn default_mode_reads_the_config_and_falls_back_to_clock() {
+        let config: Config = toml::from_str("[default]\nmode = \"stopwatch\"").unwrap();
+        assert!(matches!(default_mode(Some(&config)), Mode::Stopwatch));
+
+        let config: Config = toml::from_str("[default]\nmode = \"timer\"").unwrap();
+        assert!(matches!(
+            default_mode(Some(&config)),
+            Mode::Timer { durations, .. } if durations.is_empty()
+        ));
+
+        assert!(matches!(default_mode(None), Mode::Clock { timezone: None }));
     }
 
     #[test]
@@ -648,6 +934,7 @@ mod tests {
         let clock = Clock::new(
             DEFAULT_CLOCK_SIZE,
             Style::default(),
+            None,
             true,
             false,
             true,
@@ -656,19 +943,9 @@ mod tests {
             vec!["default".to_string(), "nerv".to_string()],
         );
         let mut app = App {
-            mode: Some(Mode::Clock {
-                timezone: None,
-                no_date: false,
-                no_seconds: false,
-                millis: false,
-            }),
-            color: None,
-            size: None,
-            theme: None,
+            mode: Some(Mode::Clock { timezone: None }),
             clock: Some(clock),
-            timer: None,
-            stopwatch: None,
-            countdown: None,
+            ..App::default()
         };
 
         app.on_key(KeyCode::Char('T'));
@@ -694,6 +971,7 @@ mod tests {
         let clock = Clock::new(
             DEFAULT_CLOCK_SIZE,
             Style::default(),
+            None,
             true,
             false,
             true,
@@ -702,19 +980,9 @@ mod tests {
             vec!["default".to_string()],
         );
         let mut app = App {
-            mode: Some(Mode::Clock {
-                timezone: None,
-                no_date: false,
-                no_seconds: false,
-                millis: false,
-            }),
-            color: None,
-            size: None,
-            theme: None,
+            mode: Some(Mode::Clock { timezone: None }),
             clock: Some(clock),
-            timer: None,
-            stopwatch: None,
-            countdown: None,
+            ..App::default()
         };
 
         assert!(app.clock.as_ref().unwrap().widgets_visible_for_test());
@@ -745,6 +1013,7 @@ mod tests {
         let mut clock = Clock::new(
             DEFAULT_CLOCK_SIZE,
             Style::default(),
+            None,
             true,
             false,
             true,
@@ -756,19 +1025,9 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         clock.render(area, &mut buffer);
         let mut app = App {
-            mode: Some(Mode::Clock {
-                timezone: None,
-                no_date: false,
-                no_seconds: false,
-                millis: false,
-            }),
-            color: None,
-            size: None,
-            theme: None,
+            mode: Some(Mode::Clock { timezone: None }),
             clock: Some(clock),
-            timer: None,
-            stopwatch: None,
-            countdown: None,
+            ..App::default()
         };
 
         assert!(app.open_widget_popup_action(KeyCode::Char('x')));

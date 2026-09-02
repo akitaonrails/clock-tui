@@ -12,17 +12,27 @@ use super::{elapsed_since, format_duration, render_centered, DurationFormat, PAU
 pub struct Stopwatch {
     pub size: u16,
     pub style: Style,
+    pub title: Option<String>,
+    format: DurationFormat,
     duration: Duration,
     started_at: Option<Instant>,
 }
 
 impl Stopwatch {
-    pub(crate) fn new(size: u16, style: Style) -> Self {
+    pub(crate) fn new(
+        size: u16,
+        style: Style,
+        title: Option<String>,
+        format: DurationFormat,
+        paused: bool,
+    ) -> Self {
         Self {
             size,
             style,
+            title,
+            format,
             duration: Duration::zero(),
-            started_at: Some(Instant::now()),
+            started_at: (!paused).then(Instant::now),
         }
     }
 
@@ -41,15 +51,22 @@ impl Stopwatch {
 
 impl Widget for &Stopwatch {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let time_str = format_duration(self.total_time(), DurationFormat::HourMinSecDeci);
+        let time_str = format_duration(self.total_time(), self.format);
         let font = BricksFont::new(self.size);
-        let text = ClockText::new(time_str.to_string(), &font, self.style);
+        let text = ClockText::new(time_str, &font, self.style);
         let footer = if self.is_paused() {
             Some(PAUSED_FOOTER.to_string())
         } else {
             None
         };
-        render_centered(area, buf, &text, None, footer, Style::default());
+        render_centered(
+            area,
+            buf,
+            &text,
+            self.title.clone(),
+            footer,
+            Style::default(),
+        );
     }
 }
 
@@ -69,5 +86,33 @@ impl Pause for Stopwatch {
         if self.started_at.is_none() {
             self.started_at = Some(Instant::now());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopwatch_can_start_paused() {
+        let stopwatch = Stopwatch::new(
+            1,
+            Style::default(),
+            Some("Focus".to_string()),
+            DurationFormat::HourMin,
+            true,
+        );
+
+        assert!(stopwatch.is_paused());
+        assert_eq!(stopwatch.total_time(), Duration::zero());
+        assert_eq!(stopwatch.title.as_deref(), Some("Focus"));
+    }
+
+    #[test]
+    fn stopwatch_starts_running_by_default() {
+        let stopwatch =
+            Stopwatch::new(1, Style::default(), None, DurationFormat::HourMinSec, false);
+
+        assert!(!stopwatch.is_paused());
     }
 }
