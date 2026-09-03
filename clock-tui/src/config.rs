@@ -146,9 +146,11 @@ pub struct ClockWidgetPopupActionConfig {
     pub timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct TimerConfig {
-    #[serde(default = "default_timer_durations")]
+    /// Empty means "not configured": the timer then falls back to the
+    /// built-in 5m default (see `configured_timer_durations` in app.rs).
+    #[serde(default)]
     pub durations: Vec<String>,
     /// One title per duration. Takes precedence over `title`.
     #[serde(default)]
@@ -203,19 +205,6 @@ impl Default for ClockConfig {
     }
 }
 
-impl Default for TimerConfig {
-    fn default() -> Self {
-        Self {
-            durations: default_timer_durations(),
-            titles: Vec::new(),
-            repeat: false,
-            auto_quit: false,
-            execute: Vec::new(),
-            display: DisplayConfig::default(),
-        }
-    }
-}
-
 fn default_mode() -> String {
     "clock".to_string()
 }
@@ -226,10 +215,6 @@ fn default_color() -> String {
 
 fn default_size() -> u16 {
     1
-}
-
-fn default_timer_durations() -> Vec<String> {
-    vec!["25m".to_string(), "5m".to_string()]
 }
 
 fn default_widget_refresh_secs() -> u64 {
@@ -469,7 +454,7 @@ mod tests {
         assert_eq!(config.stopwatch.display, DisplayConfig::default());
         assert_eq!(config.timer.display, DisplayConfig::default());
         assert!(!config.timer.repeat);
-        assert_eq!(config.timer.durations, default_timer_durations());
+        assert!(config.timer.durations.is_empty());
     }
 
     #[test]
