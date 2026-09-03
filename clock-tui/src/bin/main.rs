@@ -69,19 +69,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     _ if app.has_widget_popup_open() => app.on_widget_popup_key(key.code),
                     _ if app.open_widget_popup_action(key.code) => {}
                     KeyCode::Char(' ') => app.on_key(KeyCode::Char(' ')),
-                    KeyCode::Char('c') => app.set_mode(Mode::Clock {
-                        timezone: None,
-                        no_date: false,
-                        no_seconds: false,
-                        millis: false,
-                    }),
+                    // Display flags given on the command line (title,
+                    // seconds, millis, paused, ...) live on `app` and survive
+                    // these switches; mode-specific values come from config.
+                    KeyCode::Char('c') => app.set_mode(Mode::Clock { timezone: None }),
                     KeyCode::Char('w') => app.set_mode(Mode::Stopwatch),
                     KeyCode::Char('t') => app.set_mode(Mode::Timer {
                         durations: vec![],
-                        titles: vec![],
                         repeat: false,
-                        no_millis: false,
-                        paused: false,
                         auto_quit: false,
                         execute: vec![],
                     }),

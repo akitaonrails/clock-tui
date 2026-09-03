@@ -15,6 +15,7 @@ use super::render_centered;
 pub(crate) struct Clock {
     pub size: u16,
     pub style: Style,
+    pub title: Option<String>,
     pub show_date: bool,
     pub show_millis: bool,
     pub show_secs: bool,
@@ -28,6 +29,7 @@ impl Clock {
     pub(crate) fn new(
         size: u16,
         style: Style,
+        title: Option<String>,
         show_date: bool,
         show_millis: bool,
         show_secs: bool,
@@ -38,6 +40,7 @@ impl Clock {
         Self {
             size,
             style,
+            title,
             show_date,
             show_millis,
             show_secs,
@@ -119,19 +122,18 @@ impl Clock {
         } else {
             Local::now().naive_local()
         };
-        let time_str = if self.show_millis {
-            now.format("%H:%M:%S%.1f").to_string()
-        } else if self.show_secs {
-            now.format("%H:%M:%S").to_string()
-        } else {
+        let time_str = if !self.show_secs {
             now.format("%H:%M").to_string()
+        } else if self.show_millis {
+            now.format("%H:%M:%S%.1f").to_string()
+        } else {
+            now.format("%H:%M:%S").to_string()
         };
         let time_str = time_str.as_str();
-        let header = if self.show_date {
-            Some(format_clock_header(now, self.timezone))
-        } else {
-            None
-        };
+        let date = self
+            .show_date
+            .then(|| format_clock_header(now, self.timezone));
+        let header = clock_header(self.title.as_deref(), date);
 
         if self.widgets.is_empty() || !self.widgets_visible {
             self.render_clock(area, buf, time_str, header, self.size);
@@ -180,6 +182,17 @@ fn clock_height_budget(area_height: u16) -> u16 {
         0
     } else {
         (area_height / 2).max(1)
+    }
+}
+
+/// The single header line above the clock digits: the title, the date, or
+/// both joined with a middle dot.
+fn clock_header(title: Option<&str>, date: Option<String>) -> Option<String> {
+    let title = title.map(str::trim).filter(|title| !title.is_empty());
+    match (title, date) {
+        (Some(title), Some(date)) => Some(format!("{title} · {date}")),
+        (Some(title), None) => Some(title.to_string()),
+        (None, date) => date,
     }
 }
 
@@ -262,10 +275,26 @@ mod tests {
     }
 
     #[test]
+    fn clock_header_combines_title_and_date() {
+        assert_eq!(clock_header(None, None), None);
+        assert_eq!(
+            clock_header(None, Some("Sunday".to_string())),
+            Some("Sunday".to_string())
+        );
+        assert_eq!(clock_header(Some("Focus"), None), Some("Focus".to_string()));
+        assert_eq!(clock_header(Some("  "), None), None);
+        assert_eq!(
+            clock_header(Some("Focus"), Some("Sunday".to_string())),
+            Some("Focus · Sunday".to_string())
+        );
+    }
+
+    #[test]
     fn clock_theme_cycle_updates_clock_palette() {
         let mut clock = Clock::new(
             1,
             Style::default().fg(Color::Green),
+            None,
             true,
             false,
             true,

@@ -60,6 +60,29 @@ tclock clock --help
 tclock timer --help
 ```
 
+### Display options (every mode)
+
+These flags work in every mode, before or after the mode name, and they survive the `c`/`w`/`t` mode switches:
+
+| Flag | Effect |
+| --- | --- |
+| `-T, --title TEXT` | Header above the digits. Timer accepts one title per duration. |
+| `-S, --no-seconds` / `--seconds` | Hide or show seconds. Hidden seconds give an `H:MM` display in every mode. |
+| `-M, --no-millis` / `-m, --millis` | Hide or show fractional seconds. |
+| `-D, --no-date` / `--date` | Hide or show the date line (clock mode). |
+| `-P, --paused` | Start paused (timer and stopwatch). |
+| `-c, --color`, `-s, --size`, `--theme` | Color, size, and initial theme. |
+
+Precedence, highest first: the flag, the mode's config section, `[default]`, then the mode's built-in default. Built-in defaults: the clock shows the date and seconds; timer and stopwatch show fractional seconds; countdown shows whole seconds.
+
+```shell
+tclock stopwatch --title Deep\ work --no-seconds
+tclock timer -d 25m 5m -T Focus Break -P
+tclock countdown -t 20:00 -T Dinner --no-millis
+```
+
+Put the mode name before `--title` when a title has several words, since `--title` takes every following word until the next flag.
+
 ## Modes
 
 ### Clock
@@ -73,11 +96,12 @@ tclock
 
 ![clock](./assets/demo-clock-mode.gif)
 
-Clock options include timezone, seconds, milliseconds, date visibility, color, and size:
+The clock has one option of its own, the timezone. Everything else comes from the [display options](#display-options-every-mode). A title shares the header line with the date:
 
 ```shell
 tclock clock --timezone America/New_York
 tclock clock --no-seconds
+tclock clock --title Study
 tclock --color '#e63946'
 tclock --size 2
 tclock --theme nerv
@@ -90,12 +114,14 @@ tclock --theme nerv
 tclock timer --duration 5m
 ```
 
-Durations can use suffixes such as `s`, `m`, `h`, and `d`. Timer mode can run several durations sequentially and can execute a command when time is up:
+Durations can use suffixes such as `s`, `m`, `h`, and `d`. Without `--duration`, the timer uses `[timer] durations` from the config, then 5m. Timer mode can run several durations sequentially and can execute a command when time is up:
 
 ```shell
 tclock timer --duration 25m 5m --title Focus Break
 tclock timer --duration 25m --execute terminal-notifier -title tclock -message "Time is up!"
 ```
+
+`--execute` falls back to `[timer] execute` from the config. `--paused` starts the timer paused; `--no-millis` hides fractional seconds.
 
 ![timer](./assets/demo-timer-mode.gif)
 
@@ -103,6 +129,8 @@ tclock timer --duration 25m --execute terminal-notifier -title tclock -message "
 
 ```shell
 tclock stopwatch
+tclock stopwatch --title Lap --no-millis
+tclock stopwatch --no-seconds --paused
 ```
 
 ![stopwatch](./assets/demo-stopwatch-mode.gif)
@@ -113,7 +141,7 @@ tclock stopwatch
 tclock countdown --time 2026-01-01 --title 'New Year 2026'
 ```
 
-`--time` accepts values such as `2026-01-01`, `20:00`, `2026-12-25 20:00:00`, or `2026-12-25T20:00:00-04:00`.
+`--time` accepts values such as `2026-01-01`, `20:00`, `2026-12-25 20:00:00`, or `2026-12-25T20:00:00-04:00`. `-C, --continue` keeps counting past zero, `-r, --reverse` counts up instead.
 
 ![countdown](./assets/demo-countdown-mode.gif)
 
@@ -140,21 +168,35 @@ Example:
 mode = "clock"
 color = "green"
 size = 1
+# Display keys here apply to every mode unless a mode section overrides them.
+show_seconds = true
+show_millis = false
 
 [clock]
 show_date = true
-show_seconds = true
-show_millis = false
 timezone = "America/Sao_Paulo"
 
 [timer]
 durations = ["25m", "5m"]
-titles = ["Focus", "Break"]
+titles = ["Focus", "Break"]   # one per duration; wins over `title`
 repeat = false
 show_millis = true
 start_paused = false
 auto_quit = false
+execute = ["notify-send", "Time is up"]
+
+[stopwatch]
+title = "Lap"
+show_millis = false
+
+[countdown]
+time = "20:00"
+title = "Dinner"
+continue_on_zero = false
+reverse = false
 ```
+
+The display keys `title`, `show_date`, `show_seconds`, `show_millis`, and `start_paused` are accepted under `[default]` and under every mode section. A mode section wins over `[default]`; a command-line flag wins over both. Keys that a mode cannot use (`show_date` outside the clock, `start_paused` outside timer and stopwatch) are ignored.
 
 ## Clock widgets
 

@@ -57,16 +57,32 @@ pub struct DefaultConfig {
     pub color: String,
     #[serde(default = "default_size")]
     pub size: u16,
+    /// Display defaults shared by every mode. A mode section can override any key.
+    #[serde(flatten)]
+    pub display: DisplayConfig,
+}
+
+/// Display options every mode understands. They can appear under `[default]`
+/// and under any mode section; the mode section wins, then `[default]`, then
+/// the built-in default for that mode. Command-line flags override both.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct DisplayConfig {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub show_date: Option<bool>,
+    #[serde(default)]
+    pub show_seconds: Option<bool>,
+    #[serde(default)]
+    pub show_millis: Option<bool>,
+    #[serde(default)]
+    pub start_paused: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ClockConfig {
-    #[serde(default = "default_true")]
-    pub show_date: bool,
-    #[serde(default = "default_true")]
-    pub show_seconds: bool,
-    #[serde(default = "default_false")]
-    pub show_millis: bool,
+    #[serde(flatten)]
+    pub display: DisplayConfig,
     #[serde(default, deserialize_with = "deserialize_timezone")]
     pub timezone: Option<Tz>,
     #[serde(default)]
@@ -130,39 +146,41 @@ pub struct ClockWidgetPopupActionConfig {
     pub timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct TimerConfig {
-    #[serde(default = "default_timer_durations")]
+    /// Empty means "not configured": the timer then falls back to the
+    /// built-in 5m default (see `configured_timer_durations` in app.rs).
+    #[serde(default)]
     pub durations: Vec<String>,
+    /// One title per duration. Takes precedence over `title`.
     #[serde(default)]
     pub titles: Vec<String>,
     #[serde(default)]
     pub repeat: bool,
-    #[serde(default = "default_true")]
-    pub show_millis: bool,
-    #[serde(default)]
-    pub start_paused: bool,
     #[serde(default)]
     pub auto_quit: bool,
     #[serde(default)]
     pub execute: Vec<String>,
+    #[serde(flatten)]
+    pub display: DisplayConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct StopwatchConfig {}
+pub struct StopwatchConfig {
+    #[serde(flatten)]
+    pub display: DisplayConfig,
+}
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CountdownConfig {
     #[serde(default)]
     pub time: Option<String>,
     #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub show_millis: bool,
-    #[serde(default)]
     pub continue_on_zero: bool,
     #[serde(default)]
     pub reverse: bool,
+    #[serde(flatten)]
+    pub display: DisplayConfig,
 }
 
 impl Default for DefaultConfig {
@@ -171,6 +189,7 @@ impl Default for DefaultConfig {
             mode: default_mode(),
             color: default_color(),
             size: default_size(),
+            display: DisplayConfig::default(),
         }
     }
 }
@@ -178,26 +197,10 @@ impl Default for DefaultConfig {
 impl Default for ClockConfig {
     fn default() -> Self {
         Self {
-            show_date: default_true(),
-            show_seconds: default_true(),
-            show_millis: default_false(),
+            display: DisplayConfig::default(),
             timezone: None,
             widgets: Vec::new(),
             widget_themes: default_widget_themes(),
-        }
-    }
-}
-
-impl Default for TimerConfig {
-    fn default() -> Self {
-        Self {
-            durations: default_timer_durations(),
-            titles: Vec::new(),
-            repeat: false,
-            show_millis: default_true(),
-            start_paused: false,
-            auto_quit: false,
-            execute: Vec::new(),
         }
     }
 }
@@ -212,18 +215,6 @@ fn default_color() -> String {
 
 fn default_size() -> u16 {
     1
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_false() -> bool {
-    false
-}
-
-fn default_timer_durations() -> Vec<String> {
-    vec!["25m".to_string(), "5m".to_string()]
 }
 
 fn default_widget_refresh_secs() -> u64 {
@@ -311,7 +302,7 @@ impl Config {
         match toml::from_str(&content) {
             Ok(config) => Some(config),
             Err(e) => {
-                eprintln!("解析配置文件失败: {}", e);
+                eprintln!("failed to parse config file {}: {}", path.display(), e);
                 None
             }
         }
@@ -405,6 +396,65 @@ mod tests {
         assert_eq!(action.label.as_deref(), Some("details"));
         assert_eq!(action.args, vec!["--details"]);
         assert_eq!(action.timeout_secs, Some(4));
+    }
+
+    #[test]
+    fn display_keys_parse_under_default_and_every_mode_section() {
+        let config: Config = toml::from_str(
+            r#"
+            [default]
+            title = "Shared"
+            show_seconds = false
+
+            [clock]
+            show_date = false
+            show_millis = true
+
+            [timer]
+            durations = ["10m"]
+            titles = ["Work"]
+            start_paused = true
+
+            [stopwatch]
+            title = "Lap"
+            show_millis = false
+
+            [countdown]
+            time = "20:00"
+            title = "Dinner"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.default.display.title.as_deref(), Some("Shared"));
+        assert_eq!(config.default.display.show_seconds, Some(false));
+        assert_eq!(config.default.display.show_millis, None);
+
+        assert_eq!(config.clock.display.show_date, Some(false));
+        assert_eq!(config.clock.display.show_millis, Some(true));
+        assert_eq!(config.clock.display.show_seconds, None);
+        assert_eq!(config.clock.widget_themes, default_widget_themes());
+
+        assert_eq!(config.timer.durations, vec!["10m"]);
+        assert_eq!(config.timer.titles, vec!["Work"]);
+        assert_eq!(config.timer.display.start_paused, Some(true));
+
+        assert_eq!(config.stopwatch.display.title.as_deref(), Some("Lap"));
+        assert_eq!(config.stopwatch.display.show_millis, Some(false));
+
+        assert_eq!(config.countdown.time.as_deref(), Some("20:00"));
+        assert_eq!(config.countdown.display.title.as_deref(), Some("Dinner"));
+    }
+
+    #[test]
+    fn missing_sections_leave_display_options_unset() {
+        let config: Config = toml::from_str("").unwrap();
+
+        assert_eq!(config.default.display, DisplayConfig::default());
+        assert_eq!(config.stopwatch.display, DisplayConfig::default());
+        assert_eq!(config.timer.display, DisplayConfig::default());
+        assert!(!config.timer.repeat);
+        assert!(config.timer.durations.is_empty());
     }
 
     #[test]

@@ -28,12 +28,31 @@ pub(crate) const PAUSED_FOOTER: &str = "PAUSED (press <SPACE> to resume)";
 const FLASH_PERIOD_MILLIS: i64 = 1000;
 const FLASH_ON_MILLIS: i64 = 500;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum DurationFormat {
     /// Hours, minutes, seconds, deciseconds
     HourMinSecDeci,
     /// Hours, minutes, seconds
     HourMinSec,
+    /// Hours and minutes only. Hours are always shown so the value still
+    /// reads as a duration (`0:05` rather than a bare `5`).
+    HourMin,
+}
+
+impl DurationFormat {
+    /// Pick the format for the resolved display options. Hiding seconds wins
+    /// over showing fractional seconds, since there is no seconds field to
+    /// attach them to.
+    pub(crate) fn from_display(show_seconds: bool, show_millis: bool) -> Self {
+        if !show_seconds {
+            Self::HourMin
+        } else if show_millis {
+            Self::HourMinSecDeci
+        } else {
+            Self::HourMinSec
+        }
+    }
 }
 
 fn format_duration(duration: Duration, format: DurationFormat) -> String {
@@ -58,23 +77,31 @@ fn format_duration(duration: Duration, format: DurationFormat) -> String {
     if days > 0 {
         let _ = write!(result, "{}:", days);
     }
-    if hours > 0 {
-        append_number(&mut result, hours % 24);
-        result.push(':');
+    match format {
+        DurationFormat::HourMin => {
+            append_number(&mut result, hours % 24);
+            let _ = write!(result, ":{:02}", minutes % 60);
+        }
+        DurationFormat::HourMinSecDeci => {
+            if hours > 0 {
+                append_number(&mut result, hours % 24);
+                result.push(':');
+            }
+            append_number(&mut result, minutes % 60);
+            let _ = write!(result, ":{:02}.{}", seconds % 60, (millis % 1000) / 100);
+        }
+        DurationFormat::HourMinSec => {
+            if hours > 0 {
+                append_number(&mut result, hours % 24);
+                result.push(':');
+            }
+            append_number(&mut result, minutes % 60);
+            let _ = write!(result, ":{:02}", seconds % 60);
+        }
     }
-    append_number(&mut result, minutes % 60);
-    result.push(':');
 
     if is_neg {
         result.insert(0, '-');
-    }
-    match format {
-        DurationFormat::HourMinSecDeci => {
-            let _ = write!(result, "{:02}.{}", seconds % 60, (millis % 1000) / 100);
-        }
-        DurationFormat::HourMinSec => {
-            let _ = write!(result, "{:02}", seconds % 60);
-        }
     }
 
     result
@@ -171,6 +198,48 @@ mod tests {
         assert_eq!(
             format_duration(-Duration::seconds(65), DurationFormat::HourMinSecDeci),
             "-1:05.0"
+        );
+    }
+
+    #[test]
+    fn format_duration_supports_hours_and_minutes_only() {
+        assert_eq!(
+            format_duration(Duration::seconds(65), DurationFormat::HourMin),
+            "0:01"
+        );
+        assert_eq!(
+            format_duration(
+                Duration::hours(3) + Duration::minutes(7),
+                DurationFormat::HourMin
+            ),
+            "3:07"
+        );
+        assert_eq!(
+            format_duration(
+                Duration::days(1) + Duration::minutes(30),
+                DurationFormat::HourMin
+            ),
+            "1:00:30"
+        );
+        assert_eq!(
+            format_duration(-Duration::minutes(90), DurationFormat::HourMin),
+            "-1:30"
+        );
+    }
+
+    #[test]
+    fn duration_format_from_display_prefers_hiding_seconds() {
+        assert_eq!(
+            DurationFormat::from_display(false, true),
+            DurationFormat::HourMin
+        );
+        assert_eq!(
+            DurationFormat::from_display(true, true),
+            DurationFormat::HourMinSecDeci
+        );
+        assert_eq!(
+            DurationFormat::from_display(true, false),
+            DurationFormat::HourMinSec
         );
     }
 
