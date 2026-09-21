@@ -443,6 +443,8 @@ impl App {
                 KeyCode::Char('z') => w.toggle_widgets(),
                 KeyCode::Home => w.scroll_active_widget_to_top(),
                 KeyCode::End => w.scroll_active_widget_to_bottom(),
+                KeyCode::PageUp => w.scroll_active_widget_by_page(-1),
+                KeyCode::PageDown => w.scroll_active_widget_by_page(1),
                 _ => {}
             }
         } else if let Some(w) = self.timer.as_mut() {
