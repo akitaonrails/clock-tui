@@ -70,6 +70,10 @@ impl Clock {
         self.widgets.scroll_active_to_bottom();
     }
 
+    pub(crate) fn scroll_active_widget_by_page(&mut self, pages: i16) {
+        self.widgets.scroll_active_by_page(pages);
+    }
+
     pub(crate) fn cycle_widget_theme(&mut self) {
         self.widgets.cycle_theme();
     }

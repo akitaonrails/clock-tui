@@ -620,7 +620,7 @@ impl ClockWidgets {
             return;
         }
         if let Some(widget) = self
-            .active_widget
+            .scroll_target()
             .and_then(|index| self.widgets.get_mut(index))
         {
             widget.scroll = 0;
@@ -632,13 +632,43 @@ impl ClockWidgets {
             popup.scroll = popup.max_scroll(self.popup_viewport);
             return;
         }
-        if let Some(index) = self.active_widget {
+        if let Some(index) = self.scroll_target() {
             if let (Some(widget), Some(area)) =
                 (self.widgets.get_mut(index), self.viewports.get(index))
             {
                 widget.scroll = widget.max_scroll(*area);
             }
         }
+    }
+
+    /// Scroll the keyboard scroll target by whole pages of its own viewport.
+    pub(crate) fn scroll_active_by_page(&mut self, pages: i16) {
+        if self.popup.is_some() {
+            let height = i16::try_from(self.popup_viewport.height)
+                .unwrap_or(i16::MAX)
+                .max(1);
+            self.scroll_popup(pages.saturating_mul(height));
+            return;
+        }
+        if let Some(index) = self.scroll_target() {
+            self.active_widget = Some(index);
+            if let (Some(widget), Some(area)) =
+                (self.widgets.get_mut(index), self.viewports.get(index))
+            {
+                let height = i16::try_from(area.height).unwrap_or(i16::MAX).max(1);
+                widget.scroll_by(pages.saturating_mul(height));
+                widget.clamp_scroll(*area);
+            }
+        }
+    }
+
+    /// The widget keyboard scrolling acts on: the last mouse-scrolled widget
+    /// while it is visible, otherwise the first visible widget — so Home/End
+    /// and PageUp/PageDown work without any prior mouse interaction.
+    fn scroll_target(&self) -> Option<usize> {
+        self.active_widget
+            .filter(|&index| self.widgets.get(index).is_some_and(|widget| widget.visible))
+            .or_else(|| self.widgets.iter().position(|widget| widget.visible))
     }
 
     fn hit_test(&self, column: u16, row: u16) -> Option<usize> {
@@ -1560,6 +1590,60 @@ mod tests {
         assert_eq!(
             widgets.widgets[0].scroll,
             widgets.widgets[0].max_scroll(widgets.viewports[0])
+        );
+    }
+
+    #[test]
+    fn page_scroll_moves_by_viewport_height_and_needs_no_prior_mouse_scroll() {
+        let mut widgets = ClockWidgets::new(
+            vec![widget_config("one"), widget_config("two")],
+            default_themes(),
+        );
+        widgets.widgets[0].output = numbered_lines(20);
+        widgets.widgets[1].output = numbered_lines(20);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 8));
+        widgets.render(
+            Rect::new(0, 0, 40, 8),
+            Rect::new(0, 0, 40, 8),
+            &mut buffer,
+            default_clock_theme(),
+        );
+
+        // No widget was ever mouse-scrolled: paging targets the first visible
+        // widget and makes it the active one.
+        assert_eq!(widgets.active_widget, None);
+        widgets.scroll_active_by_page(1);
+        assert_eq!(widgets.active_widget, Some(0));
+        assert_eq!(widgets.widgets[0].scroll, widgets.viewports[0].height);
+
+        widgets.scroll_active_by_page(50);
+        assert_eq!(
+            widgets.widgets[0].scroll,
+            widgets.widgets[0].max_scroll(widgets.viewports[0])
+        );
+        widgets.scroll_active_by_page(-50);
+        assert_eq!(widgets.widgets[0].scroll, 0);
+
+        // A mouse scroll on the second widget moves the target there.
+        let second = widgets.viewports[1];
+        widgets.scroll_at(second.x + 1, second.y + 1, 1);
+        widgets.scroll_active_by_page(1);
+        assert_eq!(widgets.active_widget, Some(1));
+        assert!(widgets.widgets[1].scroll >= second.height);
+
+        // Home/End work without prior mouse interaction too.
+        let mut fresh = ClockWidgets::new(vec![widget_config("one")], default_themes());
+        fresh.widgets[0].output = numbered_lines(20);
+        fresh.render(
+            Rect::new(0, 0, 40, 8),
+            Rect::new(0, 0, 40, 8),
+            &mut buffer,
+            default_clock_theme(),
+        );
+        fresh.scroll_active_to_bottom();
+        assert_eq!(
+            fresh.widgets[0].scroll,
+            fresh.widgets[0].max_scroll(fresh.viewports[0])
         );
     }
 

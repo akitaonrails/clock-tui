@@ -84,7 +84,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     | KeyCode::Char('g')
                     | KeyCode::Char('z')
                     | KeyCode::Home
-                    | KeyCode::End => app.on_key(key.code),
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown => app.on_key(key.code),
                     _ => {}
                 },
                 Event::Mouse(mouse) => match mouse.kind {
