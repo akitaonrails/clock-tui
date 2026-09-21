@@ -287,6 +287,22 @@ refresh_secs = 900
 
 To show a different region, change the location in the `wttr.in` URL — it accepts a city (`wttr.in/Curitiba`), a city with country when the name is ambiguous (`wttr.in/Porto+Alegre,BR`), an airport code (`wttr.in/GRU`), or `~` for a landmark (`wttr.in/~Cristo+Redentor`). Use `+` for spaces and drop accents. The query flags: `0` prints today only (keeping the widget short), `Q` hides the location header, `M` reports wind in m/s. Don't add `T` — it strips the ANSI colors that the widget would otherwise render. Leaving the location out entirely (`wttr.in/?0`) geolocates by IP, which behind a VPN reports the VPN's exit city.
 
+### Bundled example: weather widget
+
+The repo ships a ready-to-use weather widget at [`examples/widgets/tclock-weather`](./examples/widgets/tclock-weather). It fetches current conditions plus an N-day forecast from [Open-Meteo](https://open-meteo.com) (no API key) and renders them as a compact themed block:
+
+```toml
+[clock]
+[[clock.widgets]]
+title = "Weather"
+command = ["tclock-weather", "--city", "Curitiba"]
+refresh_secs = 900
+```
+
+Location comes from `--city NAME` (geocoded) or `--lat`/`--lon`. Use `--units imperial` for °F/mph, `--days N` (1-16) to change the forecast length, and `--current-only` to drop the daily rows. The widget honors `TCLOCK_WIDGET_THEME` (`default`, `evangelion`, `nerv`), so it follows `Shift+T`. It caches API responses for 15 minutes by default; `--no-cache` or `--cache-secs 0` disables that. `--json` prints the normalized data instead of a text block. The script prefers `jq` when installed and falls back to a pure-bash JSON parser, so `jq` is optional.
+
+The raw `wttr.in` command above still works if you prefer no extra script, but the bundled widget is more reliable and testable.
+
 ### Bundled example: system-health widget
 
 The repo ships a ready-to-use widget at [`examples/widgets/tclock-system-health`](./examples/widgets/tclock-system-health). The AUR package installs it as `/usr/bin/tclock-system-health`; release tarballs include it beside `tclock`, so manual installs can extract it to `~/.local/bin` or copy it to `/usr/local/bin`. It renders a two-column health dashboard with a one-line verdict header: backup/cleanup timer freshness, timeshift snapshots, live system/jobs/storage state, and a full-width btrfs row (scrub age per filesystem, fstrim age, allocation pressure, device I/O error counters) — all without root. A failed automount whose paired mount has recovered is shown as a retained warning instead of a live failure. Low Btrfs device-unallocated space is reported as a separate allocation problem only while the filesystem still has ordinary free space; when the filesystem itself is nearly full, the storage alert remains the actionable diagnosis.

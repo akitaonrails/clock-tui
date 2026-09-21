@@ -89,10 +89,11 @@ jobs:
           STAGE=$(mktemp -d)
           install -Dm0755 target/${{ matrix.target }}/release/tclock "$STAGE/tclock"
           install -Dm0755 examples/widgets/tclock-system-health "$STAGE/tclock-system-health"
+          install -Dm0755 examples/widgets/tclock-weather "$STAGE/tclock-weather"
           install -Dm0644 LICENSE "$STAGE/LICENSE"
           install -Dm0644 README.md "$STAGE/README.md"
           install -Dm0644 docs/widget-themes.md "$STAGE/docs/widget-themes.md"
-          tar czf ${{ matrix.artifact }}.tar.gz -C "$STAGE" tclock tclock-system-health LICENSE README.md docs/widget-themes.md
+          tar czf ${{ matrix.artifact }}.tar.gz -C "$STAGE" tclock tclock-system-health tclock-weather LICENSE README.md docs/widget-themes.md
           rm -rf "$STAGE"
 
       - name: Compute SHA256
@@ -143,7 +144,7 @@ jobs:
             echo '```bash'
             echo "ARCH=x86_64  # or aarch64"
             echo "mkdir -p ~/.local/bin"
-            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/clock-tui-linux-\$ARCH.tar.gz | tar xz -C ~/.local/bin tclock tclock-system-health"
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/clock-tui-linux-\$ARCH.tar.gz | tar xz -C ~/.local/bin tclock tclock-system-health tclock-weather"
             echo '```'
             echo
             echo "## Checksums (SHA256)"
