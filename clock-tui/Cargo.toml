@@ -28,7 +28,7 @@ clap = { version = "4.6", features = ["derive"] }
 regex = "1"
 toml = "1.1"
 serde = { version = "1", features = ["derive"] }
-dirs = "6"
+dirs = "7"
 
 [lib]
 name = "clock_tui"
