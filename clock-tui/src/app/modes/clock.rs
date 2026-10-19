@@ -22,6 +22,7 @@ pub(crate) struct Clock {
     pub timezone: Option<Tz>,
     widgets_visible: bool,
     widgets: ClockWidgets,
+    max_widget_size: Option<u16>,
 }
 
 impl Clock {
@@ -47,7 +48,14 @@ impl Clock {
             timezone,
             widgets_visible: true,
             widgets: ClockWidgets::new(widgets, widget_themes),
+            max_widget_size: None,
         }
+    }
+
+    /// Caps the auto-sized clock while widgets are visible.
+    pub(crate) fn with_max_widget_size(mut self, max_size: Option<u16>) -> Self {
+        self.max_widget_size = max_size.filter(|size| *size > 0);
+        self
     }
 
     pub(crate) fn tick(&mut self) {
@@ -142,7 +150,12 @@ impl Clock {
         if self.widgets.is_empty() || !self.widgets_visible {
             self.render_clock(area, buf, time_str, header, self.size);
         } else {
-            let layout = clock_widgets_layout(area, time_str.chars().count(), header.is_some());
+            let layout = clock_widgets_layout(
+                area,
+                time_str.chars().count(),
+                header.is_some(),
+                self.max_widget_size,
+            );
 
             self.render_clock(layout.clock_area, buf, time_str, header, layout.clock_size);
             let theme = self.current_theme();
@@ -159,13 +172,19 @@ struct ClockWidgetsLayout {
     clock_size: u16,
 }
 
-fn clock_widgets_layout(area: Rect, text_len: usize, has_header: bool) -> ClockWidgetsLayout {
+fn clock_widgets_layout(
+    area: Rect,
+    text_len: usize,
+    has_header: bool,
+    max_size: Option<u16>,
+) -> ClockWidgetsLayout {
     let clock_height_budget = clock_height_budget(area.height);
     let sizing_area = Rect {
         height: clock_height_budget,
         ..area
     };
     let clock_size = clock_size_for_area(text_len, sizing_area, has_header);
+    let clock_size = max_size.map_or(clock_size, |max| clock_size.min(max));
     let clock_height = clock_height_for_size(clock_size, has_header)
         .min(clock_height_budget)
         .min(area.height);
@@ -232,7 +251,7 @@ mod tests {
 
     #[test]
     fn widgets_get_extra_height_when_width_limits_square_clock() {
-        let layout = clock_widgets_layout(Rect::new(0, 0, 80, 80), 8, true);
+        let layout = clock_widgets_layout(Rect::new(0, 0, 80, 80), 8, true, None);
 
         assert_eq!(layout.clock_size, 1);
         assert_eq!(layout.clock_area.height, 9);
@@ -240,8 +259,20 @@ mod tests {
     }
 
     #[test]
+    fn max_widget_size_caps_auto_sized_clock() {
+        let layout = clock_widgets_layout(Rect::new(0, 0, 500, 50), 8, true, Some(2));
+
+        assert_eq!(layout.clock_size, 2);
+        assert_eq!(layout.clock_area.height, clock_height_for_size(2, true));
+        assert_eq!(
+            layout.widgets_area.height,
+            50 - clock_height_for_size(2, true)
+        );
+    }
+
+    #[test]
     fn wide_clock_height_is_capped_to_top_half() {
-        let layout = clock_widgets_layout(Rect::new(0, 0, 500, 50), 8, true);
+        let layout = clock_widgets_layout(Rect::new(0, 0, 500, 50), 8, true, None);
 
         assert_eq!(layout.clock_size, 4);
         assert!(layout.clock_area.height <= 25);
@@ -251,7 +282,7 @@ mod tests {
 
     #[test]
     fn clock_layout_leaves_vertical_breathing_without_header() {
-        let layout = clock_widgets_layout(Rect::new(0, 0, 500, 50), 8, false);
+        let layout = clock_widgets_layout(Rect::new(0, 0, 500, 50), 8, false, None);
 
         assert_eq!(layout.clock_size, 4);
         assert_eq!(layout.clock_area.height, 22);
@@ -260,7 +291,7 @@ mod tests {
 
     #[test]
     fn clock_layout_handles_tiny_areas() {
-        let layout = clock_widgets_layout(Rect::new(0, 0, 10, 1), 8, true);
+        let layout = clock_widgets_layout(Rect::new(0, 0, 10, 1), 8, true, None);
 
         assert_eq!(layout.clock_area.height, 1);
         assert_eq!(layout.widgets_area.height, 0);

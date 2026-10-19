@@ -206,6 +206,15 @@ Widgets are useful for small status panels: GitHub pending work, calendars, syst
 
 The clock automatically sizes itself into the top area when widgets are configured, and the bottom area shows up to 2 widgets on square-ish terminals, 4 on wide terminals, and 6 on ultra-wide terminals.
 
+`size` only applies to the clock alone, because the widget layout picks the largest clock that fits the top half of the terminal. To keep the clock smaller and give the freed rows to the widgets, set an upper bound:
+
+```toml
+[clock]
+max_widget_clock_size = 2   # optional; unset keeps the automatic size
+```
+
+The bound only lowers the automatic size, so a terminal too small for it still shrinks the clock as before. Hiding the widgets with `z` goes back to `size`.
+
 Widgets with `position = "bottom"` are placed in a full-width band beneath the widget row instead, stacked in config order and each sized to exactly fit its output. The widget row keeps a minimum height when both are present, and a bottom widget that cannot get at least 3 rows is hidden rather than squeezed. Bottom widgets don't count against the per-row widget limits, so a status strip can coexist with a full row of columns.
 
 When a widget has more output than fits on screen, scroll it with the mouse wheel over that widget, or from the keyboard: `PageUp`/`PageDown` scroll by one widget page, `Home` and `End` jump to the top or bottom. Keyboard scrolling acts on the last widget touched by the mouse wheel, or the first visible widget before any mouse interaction. In clock mode, press `Shift+T` to cycle the configured clock theme; lowercase `t` still switches to Timer mode. Press `g` to cycle widget groups (see [Widget groups](#widget-groups)). Press `z` to toggle a clock-only layout that hides every widget and centers the clock in the full terminal; press `z` again to restore the previous widget/group layout. Hidden widgets do not refresh. Widgets can also contribute key-bound popup actions.
