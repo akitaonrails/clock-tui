@@ -19,19 +19,7 @@ impl<'a> ClockText<'a> {
         ClockText { text, font, style }
     }
     pub fn size(&self) -> (u16, u16) {
-        let char_count = self.text.chars().count() as u16;
-        let height = self.font.get_char_height();
-
-        if char_count == 0 {
-            return (0, height);
-        }
-
-        let char_width = self.font.get_char_width().saturating_add(CHARACTER_SPACING);
-        let width = char_count
-            .saturating_mul(char_width)
-            .saturating_sub(CHARACTER_SPACING);
-
-        (width, height)
+        self.font.text_size(&self.text)
     }
 }
 

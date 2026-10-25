@@ -73,6 +73,8 @@ These flags work in every mode, before or after the mode name, and they survive 
 | `-P, --paused` | Start paused (timer and stopwatch). |
 | `-c, --color`, `-s, --size`, `--theme` | Color, size, and initial theme. |
 
+When the digits at `--size` don't fit the pane, every mode falls back to braille dots, scaled to the largest size that fits. A full `HH:MM:SS` clock fits in 14×2 cells, so it still works in small tiles.
+
 Precedence, highest first: the flag, the mode's config section, `[default]`, then the mode's built-in default. Built-in defaults: the clock shows the date and seconds; timer and stopwatch show fractional seconds; countdown shows whole seconds.
 
 ```shell

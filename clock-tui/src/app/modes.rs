@@ -9,6 +9,7 @@ use std::cmp::min;
 use std::fmt::Write as _;
 use std::time::Instant;
 
+use crate::clock_text::font::braille::BrailleFont;
 use crate::clock_text::ClockText;
 use chrono::Duration;
 pub(crate) use clock::Clock;
@@ -123,6 +124,23 @@ fn render_centered(
     footer: Option<String>,
     label_style: Style,
 ) {
+    // When the block font does not fit, fall back to braille dots so the
+    // clock still renders in small panes.
+    let braille_font;
+    let braille_text;
+    let (width, height) = text.size();
+    let fallback = (width > area.width || height > area.height)
+        .then(|| BrailleFont::fitting(&text.text, area))
+        .flatten();
+    let text = match fallback {
+        Some(font) => {
+            braille_font = font;
+            braille_text = ClockText::new(text.text.clone(), &braille_font, text.style);
+            &braille_text
+        }
+        None => text,
+    };
+
     let text_size = text.size();
     let mut text_area = Rect {
         x: area.x + (area.width.saturating_sub(text_size.0)) / 2,
@@ -247,6 +265,24 @@ mod tests {
     fn should_flash_uses_first_half_of_each_second() {
         assert!(should_flash(Duration::milliseconds(-499)));
         assert!(!should_flash(Duration::milliseconds(-500)));
+    }
+
+    #[test]
+    fn render_centered_falls_back_to_braille_in_small_areas() {
+        use crate::clock_text::font::bricks::BricksFont;
+
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buffer = Buffer::empty(area);
+        let font = BricksFont::new(1);
+        let text = ClockText::new("12:34".to_string(), &font, Style::default());
+
+        render_centered(area, &mut buffer, &text, None, None, Style::default());
+
+        let symbols: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(!symbols.contains('█'));
+        assert!(symbols
+            .chars()
+            .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
     }
 
     #[test]
