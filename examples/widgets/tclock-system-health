@@ -7,8 +7,9 @@
 #
 #   left column   scheduled protection jobs, in the order given on the
 #                 command line (--timer / --snapshots)
-#   right column  live state: system (zombies/load/mem), jobs (user timers +
-#                 failed units), storage (per-filesystem usage)
+#   right column  live state: system (zombies/load/mem/swap), services (core
+#                 desktop daemons), jobs (user timers + failed units), storage
+#                 (per-filesystem usage)
 #   bottom row    btrfs: scrub age per filesystem, fstrim age, allocation
 #                 pressure (balance indicator), device I/O error counters
 #
@@ -50,6 +51,18 @@
 #                                   /boot/grub/grub-btrfs.cfg)
 #   --snapshot-max N                warn when more than N snapshots are kept
 #                                   (pruning likely broken; default 26)
+#   --service LABEL:SCOPE:UNIT      service row: check a systemd unit, where
+#                                   SCOPE is user or system (repeatable; the
+#                                   first one replaces the default desktop set)
+#   --no-services                   omit the service row
+#   --mem-warn N / --mem-crit N     memory thresholds in percent (95 / 98)
+#   --meminfo PATH                  memory statistics source
+#                                   (default /proc/meminfo)
+#   --updates                       add a pending-update count to the system
+#                                   row (opts in; runs checkupdates, which
+#                                   syncs a temporary package database)
+#   --updates-warn N                raise the verdict once N or more updates
+#                                   are pending (default 0: informational only)
 #   --exclude-mount PREFIX          storage: ignore mounts under PREFIX
 #                                   (repeatable; e.g. USB media, NAS)
 #   --benign-zombie COMM            treat zombies with this comm as benign
@@ -63,10 +76,10 @@
 #   --no-btrfs                      omit the btrfs row even if btrfs is mounted
 #   --details                       open with the list of problems behind the
 #                                   dashboard verdict, then explain units and
-#                                   timer jobs, zombies/load/memory, timeshift
-#                                   snapshots, scheduled jobs, storage pressure,
-#                                   and btrfs allocation/I/O state (intended
-#                                   for a tclock popup action)
+#                                   timer jobs, services, zombies/load/memory/
+#                                   swap, timeshift snapshots, scheduled jobs,
+#                                   storage pressure, and btrfs allocation/I/O
+#                                   state (intended for a tclock popup action)
 #   --title TEXT                    header title (default "System Health")
 #   --theme NAME                    color theme: default, evangelion, nerv
 #                                   (default: default;
@@ -79,6 +92,17 @@ export LC_ALL=C
 ME=${0##*/}
 die() { printf '%s: %s\n' "$ME" "$*" >&2; exit 2; }
 is_uint() { case "${1-}" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# Every external probe gets a hard deadline. A wedged systemctl (dbus stall) or
+# a huge btrfs call must not freeze the clock that spawned this widget, so the
+# same rules OmaDoctor applies to its scanners apply here: bounded runtime, and
+# a probe that fails or times out degrades to "unknown" rather than "ok".
+if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=1; else HAVE_TIMEOUT=0; fi
+probe() {
+  local secs=$1
+  shift
+  if [ "$HAVE_TIMEOUT" = 1 ]; then timeout -k 2 "$secs" "$@"; else "$@"; fi
+}
 
 # ---------- themes ----------
 # Theme contract for contributors:
@@ -142,6 +166,12 @@ GRUB_BTRFS_CFG=/boot/grub/grub-btrfs.cfg
 SNAPSHOT_MAX=26
 DISK_WARN=85
 DISK_CRIT=95
+MEM_WARN=95
+MEM_CRIT=98
+SWAP_WARN=95
+MEMINFO=/proc/meminfo
+UPDATES_ENABLED=0
+UPDATES_WARN=0
 LEFT_COL=44
 SINGLE_COLUMN=0
 NO_BTRFS=0
@@ -152,6 +182,9 @@ LEFT_SPEC=()          # ordered left-column entries: "timer:LABEL:UNIT:STALE" | 
 EXCLUDE_MOUNTS=()
 BENIGN_ZOMBIES=(uwsm-app systemctl)
 BENIGN_ZOMBIES_SET=0
+SERVICES_ENABLED=1
+SERVICES_SPEC=()      # "LABEL:SCOPE:UNIT"; empty means the built-in desktop set
+SERVICES_SET=0
 
 need_val() { [ -n "${2-}" ] || die "option $1 requires a value (see --help)"; }
 
@@ -171,6 +204,23 @@ while [ $# -gt 0 ]; do
     --snapshots)      LEFT_SPEC+=("snapshots"); shift ;;
     --grub-btrfs-cfg) need_val "$1" "${2-}"; GRUB_BTRFS_CFG=$2; shift 2 ;;
     --snapshot-max)   need_val "$1" "${2-}"; is_uint "$2" || die "--snapshot-max must be a number"; SNAPSHOT_MAX=$2; shift 2 ;;
+    --service)
+      need_val "$1" "${2-}"
+      IFS=: read -r s_label s_scope s_unit s_extra <<<"$2"
+      [ -n "$s_label" ] && [ -n "$s_unit" ] && [ -z "${s_extra-}" ] \
+        || die "--service expects LABEL:SCOPE:UNIT, got '$2'"
+      case "$s_scope" in
+        user|system) ;;
+        *) die "--service SCOPE must be 'user' or 'system', got '$s_scope'" ;;
+      esac
+      [ "$SERVICES_SET" = 1 ] || { SERVICES_SPEC=(); SERVICES_SET=1; }
+      SERVICES_SPEC+=("$s_label:$s_scope:$s_unit"); shift 2 ;;
+    --no-services)    SERVICES_ENABLED=0; shift ;;
+    --mem-warn)       need_val "$1" "${2-}"; is_uint "$2" || die "--mem-warn must be a number"; MEM_WARN=$2; shift 2 ;;
+    --mem-crit)       need_val "$1" "${2-}"; is_uint "$2" || die "--mem-crit must be a number"; MEM_CRIT=$2; shift 2 ;;
+    --meminfo)        need_val "$1" "${2-}"; MEMINFO=$2; shift 2 ;;
+    --updates)        UPDATES_ENABLED=1; shift ;;
+    --updates-warn)   need_val "$1" "${2-}"; is_uint "$2" || die "--updates-warn must be a number"; UPDATES_WARN=$2; UPDATES_ENABLED=1; shift 2 ;;
     --exclude-mount)  need_val "$1" "${2-}"; EXCLUDE_MOUNTS+=("$2"); shift 2 ;;
     --benign-zombie)  need_val "$1" "${2-}"
                       [ "$BENIGN_ZOMBIES_SET" = 1 ] || { BENIGN_ZOMBIES=(); BENIGN_ZOMBIES_SET=1; }
@@ -189,9 +239,24 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$DISK_WARN" -lt "$DISK_CRIT" ] || die "--disk-warn ($DISK_WARN) must be below --disk-crit ($DISK_CRIT)"
+[ "$MEM_WARN" -lt "$MEM_CRIT" ] || die "--mem-warn ($MEM_WARN) must be below --mem-crit ($MEM_CRIT)"
 [ "$LEFT_COL" -ge 20 ] || die "--left-col must be at least 20"
 command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
 apply_theme "$THEME"
+
+# default service row: the desktop daemons worth knowing about, each at the
+# scope systemd actually defines it in. NetworkManager and bluetooth are
+# *system* units; asking --user for them reports two healthy daemons as
+# not-found. A unit that is not installed is simply omitted later.
+if [ "$SERVICES_ENABLED" = 1 ] && [ "$SERVICES_SET" = 0 ]; then
+  SERVICES_SPEC=(
+    "audio:user:pipewire"
+    "wireplumber:user:wireplumber"
+    "portal:user:xdg-desktop-portal"
+    "network:system:NetworkManager"
+    "bt:system:bluetooth"
+  )
+fi
 
 # default exclusions: removable media (override by passing any --exclude-mount)
 [ ${#EXCLUDE_MOUNTS[@]} -eq 0 ] && EXCLUDE_MOUNTS=(/run/media /media)
@@ -205,7 +270,7 @@ if [ ${#LEFT_SPEC[@]} -eq 0 ]; then
       *restic*|*borg*|*kopia*|*rsnapshot*|*duplic*|*btrbk*|*vorta*|*backup*)
         LEFT_SPEC+=("timer:${t_unit:0:8}:$t_unit:auto:") ;;
     esac
-  done < <(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $(NF-1)}')
+  done < <(probe 5 systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $(NF-1)}')
   grep -qs 'timeshift-btrfs/snapshots/' "$GRUB_BTRFS_CFG" && LEFT_SPEC+=("snapshots")
 fi
 
@@ -229,7 +294,10 @@ TIMER_INFO=()        # "LABEL SEP UNIT SEP STATUS SEP LAST SEP NEXT SEP NOTE SEP
 ZOMBIES=()           # "PID<TAB>COMM<TAB>PPID<TAB>PARENT_COMM<TAB>benign|stray"
 SNAP_STATUS=""       # missing-cfg | none | ok | late | stale
 SNAP_NEWEST=""; SNAP_COUNT=0; SNAP_AGE_H=0
-SYS_LOAD="?"; SYS_CORES="?"; SYS_MEM="?"
+SYS_LOAD="?"; SYS_CORES="?"; SYS_MEM="?"; SYS_SWAP=""
+UPDATES_STATE=""     # empty when --updates is off; else a count or "unknown"
+SERVICE_INFO=()      # "LABEL SEP SEVERITY SEP STATUS SEP NOTE"
+SERVICES_UNKNOWN=0
 
 now_s=$(date +%s)
 age_hours() { echo $(( (now_s - $(date -d "$1" +%s 2>/dev/null || echo "$now_s")) / 3600 )); }
@@ -419,13 +487,104 @@ snapshot_line() {
     "$glyph" "$LBL" "snapshot" "$N" "$age_h" "$note" "$D" "$count" "$N" "$cnote"
 }
 
-# ---------- right column: user jobs (timers + failed units) ----------
+# ---------- right column: core services (scope-correct, absence is not a fault) ----------
+# Three rules keep this from crying wolf, all borrowed from OmaDoctor:
+#   - each unit is asked at the scope systemd defines it in;
+#   - a unit that is not installed or is masked is omitted, never reported as
+#     broken (a laptop without bluetooth hardware is not a fault);
+#   - a unit whose state cannot be read is "unknown", never "ok".
+service_state() {
+  local label=$1 scope=$2 unit=$3 props load active sev note status
+  local -a ctl
+  if [ "$scope" = user ]; then ctl=(systemctl --user); else ctl=(systemctl); fi
+  props=$(probe 5 "${ctl[@]}" show "$unit" \
+    -p LoadState -p UnitFileState -p ActiveState 2>/dev/null)
+  load=$(awk -F= '$1=="LoadState"{print $2; exit}' <<<"$props")
+  active=$(awk -F= '$1=="ActiveState"{print $2; exit}' <<<"$props")
+  case "$load" in
+    loaded) ;;
+    not-found|masked) return ;;            # intentionally or simply not there
+    "")
+      SERVICES_UNKNOWN=1
+      SERVICE_INFO+=("$label${SEP}1${SEP}${Y}unknown${N}$SEP$unit (state could not be read)")
+      return ;;
+    *)
+      SERVICES_UNKNOWN=1
+      SERVICE_INFO+=("$label${SEP}1${SEP}${Y}unknown${N}$SEP$unit (load state: $load)")
+      return ;;
+  esac
+  case "$active" in
+    active)
+      sev=0; status="${G}ok${N}"; note="$unit active" ;;
+    inactive)
+      sev=0; status="${D}off${N}"; note="$unit installed but inactive ${D}($scope)${N}" ;;
+    activating|reloading|deactivating)
+      sev=1; status="${Y}${active}${N}"; note="$unit is $active ${D}($scope)${N}"
+      flag 1 services "$unit is $active ${D}($scope scope)${N}" ;;
+    failed)
+      sev=2; status="${R}failed${N}"; note="$unit failed ${D}($scope)${N}"
+      flag 2 services "$unit is failed ${D}($scope scope)${N}" ;;
+    *)
+      sev=1; status="${Y}${active:-unknown}${N}"; note="$unit is '${active:-unknown}' ${D}($scope)${N}"
+      flag 1 services "$unit is in state '${active:-unknown}' ${D}($scope scope)${N}" ;;
+  esac
+  SERVICE_INFO+=("$label$SEP$sev$SEP$status$SEP$note")
+}
+
+services_line() {
+  [ "$SERVICES_ENABLED" = 1 ] || return 0
+  local spec label scope unit entry sev glyph=$OK out="" seen=0
+  for spec in ${SERVICES_SPEC[@]+"${SERVICES_SPEC[@]}"}; do
+    IFS=: read -r label scope unit <<<"$spec"
+    service_state "$label" "$scope" "$unit"
+  done
+  for entry in ${SERVICE_INFO[@]+"${SERVICE_INFO[@]}"}; do
+    IFS=$SEP read -r label sev _ _ <<<"$entry"
+    seen=$((seen + 1))
+    [ "$sev" -eq 2 ] && glyph=$ER
+    [ "$sev" -eq 1 ] && [ "$glyph" != "$ER" ] && glyph=$WA
+  done
+  # Nothing installed is a host characteristic, not a fault: systemd answered
+  # not-found for every unit, so there is nothing unreadable to complain about.
+  if [ "$seen" -eq 0 ] && [ "$SERVICES_UNKNOWN" = 0 ]; then
+    printf '%s %s%-8s%s %s\n' "$OK" "$LBL" "services" "$N" \
+      "${D}none installed${N} ${D}(use --service or --no-services)${N}"
+    return 0
+  fi
+  if [ "$SERVICES_UNKNOWN" = 1 ]; then
+    [ "$glyph" = "$OK" ] && glyph=$WA
+    flag 1 services "service state could not be read for at least one unit ${D}(systemctl show returned no usable state)${N}"
+  fi
+  for entry in ${SERVICE_INFO[@]+"${SERVICE_INFO[@]}"}; do
+    IFS=$SEP read -r label _ _ _ <<<"$entry"
+    IFS=$SEP read -r _ _ status _ <<<"$entry"
+    out="$out${out:+ ${D}·${N} }$label $status"
+  done
+  [ -n "$out" ] || out="${D}none installed${N}"
+  printf '%s %s%-8s%s %s\n' "$glyph" "$LBL" "services" "$N" "$out"
+}
+
+
 list_failed_units() {
   if [ "$1" = user ]; then
-    systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{print $1}'
+    probe 5 systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{print $1}'
   else
-    systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}'
+    probe 5 systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}'
   fi
+}
+
+# Failed-unit state that cannot be read is "unknown", not "none". Without this,
+# a stalled or broken systemctl would make the row report a perfectly healthy
+# "0 failed units" — the most misleading answer this widget could give.
+failed_units_raw() {
+  local scope=$1 out status
+  if [ "$scope" = user ]; then
+    out=$(probe 5 systemctl --user --failed --no-legend --plain 2>/dev/null); status=$?
+  else
+    out=$(probe 5 systemctl --failed --no-legend --plain 2>/dev/null); status=$?
+  fi
+  printf '%s\n' "$out" | awk '{print $1}'
+  return "$status"
 }
 
 # A failed automount can be a retained boot-race result even though its paired
@@ -448,8 +607,14 @@ recovered_automount() {
 jobs_line() {
   local timers failed_user=0 failed_sys=0 retained_user=0 retained_sys=0
   local bad="" svc res glyph=$OK scope unit recovery failed_total retained_total fword
-  timers=$(systemctl --user list-timers --no-legend 2>/dev/null | grep -c .)
+  local jobs_unknown=0 failed_out failed_status
+  if ! timers=$(probe 5 systemctl --user list-timers --no-legend 2>/dev/null); then
+    jobs_unknown=1
+  fi
+  timers=$(printf '%s\n' "$timers" | grep -c .)
   for scope in user system; do
+    failed_out=$(failed_units_raw "$scope"); failed_status=$?
+    [ "$failed_status" -eq 0 ] || jobs_unknown=1
     while read -r unit; do
       [ -n "$unit" ] || continue
       if recovery=$(recovered_automount "$scope" "$unit"); then
@@ -463,13 +628,13 @@ jobs_line() {
       else
         failed_sys=$((failed_sys + 1))
       fi
-    done < <(list_failed_units "$scope")
+    done <<<"$failed_out"
   done
   while read -r svc; do
     [ -n "$svc" ] || continue
-    res=$(systemctl --user show "$svc" -p Result --value 2>/dev/null)
+    res=$(probe 5 systemctl --user show "$svc" -p Result --value 2>/dev/null)
     [ "$res" = "success" ] || [ -z "$res" ] || bad="$bad ${svc%.service}"
-  done < <(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $NF}')
+  done < <(probe 5 systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $NF}')
   failed_total=$((failed_user + failed_sys))
   retained_total=$((retained_user + retained_sys))
   if [ "$failed_total" -gt 0 ]; then
@@ -489,6 +654,11 @@ jobs_line() {
   if [ -n "$bad" ]; then
     [ "$glyph" = "$OK" ] && glyph=$WA
     flag 1 jobs "timer job(s) whose last run did not succeed:${bad}"
+  fi
+  if [ "$jobs_unknown" = 1 ]; then
+    [ "$glyph" = "$OK" ] && glyph=$WA
+    fword="$fword ${D}·${N} ${Y}unknown${N}"
+    flag 1 jobs "failed-unit state could not be read ${D}(systemctl --failed timed out or failed; counts below are partial)${N}"
   fi
   printf '%s %s%-8s%s %s timers %s·%s %b%s\n' \
     "$glyph" "$LBL" "jobs" "$N" "$timers" "$D" "$N" "$fword" \
@@ -673,7 +843,26 @@ system_details() {
   done
   if [ "$stray" -gt 10 ]; then g=$ER; elif [ "$stray" -gt 0 ]; then g=$WA; else g=$OK; fi
   local zword="zombie processes"; [ "$stray" -eq 1 ] && zword="zombie process"
-  item "$g" "load ${SYS_LOAD} on ${SYS_CORES} cores ${D}·${N} memory ${SYS_MEM}% in use ${D}·${N} $stray $zword ${D}(+$benign ignored as benign)${N}"
+  local mem_word="memory ${SYS_MEM}% in use" swap_word="" up_word="" mem_glyph=$g
+  local mem_c=$G swap_c=$G
+  if ! is_uint "$SYS_MEM"; then
+    mem_word="${Y}memory could not be read${N}"
+    mem_glyph=$WA
+  elif [ "$SYS_MEM" -ge "$MEM_CRIT" ]; then mem_c=$R; mem_glyph=$ER
+  elif [ "$SYS_MEM" -ge "$MEM_WARN" ]; then mem_c=$Y; mem_glyph=$WA; fi
+  if is_uint "$SYS_SWAP"; then
+    [ "$SYS_SWAP" -ge "$SWAP_WARN" ] && swap_c=$Y
+    swap_word=" ${D}·${N} ${swap_c}swap ${SYS_SWAP}%${N}"
+  fi
+  case "$UPDATES_STATE" in
+    "") ;;
+    unknown) up_word=" ${D}·${N} ${Y}updates unknown${N}" ;;
+    0) up_word=" ${D}·${N} ${G}up to date${N}" ;;
+    *) up_word=" ${D}·${N} ${D}${UPDATES_STATE} updates${N}" ;;
+  esac
+  [ "$mem_glyph" = "$ER" ] && g=$ER
+  [ "$mem_glyph" = "$WA" ] && [ "$g" = "$OK" ] && g=$WA
+  item "$g" "load ${SYS_LOAD} on ${SYS_CORES} cores ${D}·${N} ${mem_c}${mem_word}${N}${swap_word}${up_word} ${D}·${N} $stray $zword ${D}($benign ignored as benign)${N}"
   if [ ${#ZOMBIES[@]} -gt 0 ]; then
     printf '\n'
     for kind in stray benign; do
@@ -693,6 +882,48 @@ system_details() {
     hint "A zombie has already exited; it lingers only because its parent has not reaped it."
     hint "Restart or stop the parent process to clear it, or ignore it if the parent is short-lived."
     hint "Use --benign-zombie NAME to silence a process name that always leaves harmless zombies."
+  fi
+  if is_uint "$SYS_MEM" && { [ "$SYS_MEM" -ge "$MEM_WARN" ] || { is_uint "$SYS_SWAP" && [ "$SYS_SWAP" -ge "$SWAP_WARN" ]; }; }; then
+    printf '\n'
+    hint "High memory pressure means the kernel is reclaiming cache aggressively; the next step is a swap storm."
+    hint "Find the largest consumers with:  ps -eo rss,comm --sort=-rss | head"
+    hint "Swap is a slow safety net, not capacity: a full swap is a reason to add RAM or stop the workload."
+  fi
+  if [ "$UPDATES_STATE" = unknown ]; then
+    printf '\n'
+    hint "checkupdates was requested but returned no usable list — check the network, or install pacman-contrib."
+  elif is_uint "$UPDATES_STATE" && [ "$UPDATES_STATE" -gt 0 ]; then
+    printf '\n'
+    hint "Pending updates are informational unless --updates-warn N is set. Review them with: checkupdates"
+  fi
+}
+
+# Services are the one place where absence must stay silent: an uninstalled
+# unit, or one the host masked on purpose, is not a finding.
+services_details() {
+  [ "$SERVICES_ENABLED" = 1 ] || return 0
+  local entry label sev status note g shown=0
+  section "Services"
+  for entry in ${SERVICE_INFO[@]+"${SERVICE_INFO[@]}"}; do
+    IFS=$SEP read -r label sev status note <<<"$entry"
+    shown=$((shown + 1))
+    case "$sev" in
+      2) g=$ER ;;
+      1) g=$WA ;;
+      *) g=$OK ;;
+    esac
+    printf '%s%s %s%-10s%s %s %s·%s %s\n' "$M" "$g" "$LBL" "$label" "$N" "$status" "$D" "$N" "$note"
+  done
+  if [ "$shown" -eq 0 ]; then
+    item "$OK" "None of the configured services are installed on this host — nothing to check."
+    hint "The service row is optional: pass --service LABEL:SCOPE:UNIT to check your own units,"
+    hint "or --no-services to drop the row entirely."
+    return 0
+  fi
+  if [ "$SERVICES_UNKNOWN" = 1 ]; then
+    printf '\n'
+    hint "A service whose state could not be read is reported as unknown, never as healthy."
+    hint "Inspect it with:  systemctl [--user] status <unit>"
   fi
 }
 
@@ -748,13 +979,15 @@ details_main() {
       snapshots) snapshot_line >/dev/null ;;
     esac
   done
-  system_line  >/dev/null
-  jobs_line    >/dev/null
-  storage_line >/dev/null
-  btrfs_line   >/dev/null
+  system_line    >/dev/null
+  services_line  >/dev/null
+  jobs_line      >/dev/null
+  storage_line   >/dev/null
+  btrfs_line     >/dev/null
 
   flagged_summary
   unit_details
+  services_details
   system_details
   snapshot_details
   timer_details
@@ -848,9 +1081,30 @@ storage_details() {
   fi
 }
 
-# ---------- right column: system (zombies, load, memory) ----------
+# Pending package updates are opt-in (--updates): checkupdates syncs a
+# temporary package database, so it touches the network and costs a second or
+# two. Only a line that looks like "pkg old -> new" counts, so a failure banner
+# printed by a broken tool cannot be mistaken for a long update list.
+updates_probe() {
+  [ "$UPDATES_ENABLED" = 1 ] || return 0
+  local available status count
+  if ! command -v checkupdates >/dev/null 2>&1; then
+    UPDATES_STATE=unknown; return 0
+  fi
+  # checkupdates: 0 = updates available, 2 = none, anything else = error
+  available=$(probe 20 checkupdates 2>/dev/null); status=$?
+  count=$(awk 'NF >= 4 && $3 == "->" {print}' <<<"$available" | grep -c .)
+  case "$status" in
+    0) [ "$count" -gt 0 ] && UPDATES_STATE=$count || UPDATES_STATE=unknown ;;
+    2) UPDATES_STATE=0 ;;
+    *) UPDATES_STATE=unknown ;;
+  esac
+}
+
+# ---------- right column: system (zombies, load, memory, swap) ----------
 system_line() {
-  local z=0 benign=0 zpid zppid zcomm pcomm load cores memp glyph=$OK zc=$G note="" bz match kind stray=""
+  local z=0 benign=0 zpid zppid zcomm pcomm load cores glyph=$OK zc=$G note="" bz match kind stray=""
+  local memp="" swapp="" cm=$G cs=$G swapbit="" upbit="" memvals
   while read -r zpid zppid zcomm; do
     match=0
     for bz in ${BENIGN_ZOMBIES[@]+"${BENIGN_ZOMBIES[@]}"}; do
@@ -862,19 +1116,67 @@ system_line() {
     fi
     if [ "$match" = 1 ]; then benign=$((benign+1)); kind=benign
     else z=$((z+1)); kind=stray; stray="$stray${stray:+, }$zcomm ${D}(pid $zpid)${N}"; fi
-    pcomm=$(ps -o comm= -p "$zppid" 2>/dev/null || true)
+    pcomm=$(probe 5 ps -o comm= -p "$zppid" 2>/dev/null || true)
     ZOMBIES+=("$zpid"$'\t'"$zcomm"$'\t'"$zppid"$'\t'"${pcomm:-?}"$'\t'"$kind")
-  done < <(ps -eo pid=,ppid=,stat=,comm= 2>/dev/null | awk '$3 ~ /^Z/ {print $1, $2, $4}')
+  done < <(probe 5 ps -eo pid=,ppid=,stat=,comm= 2>/dev/null | awk '$3 ~ /^Z/ {print $1, $2, $4}')
   load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo '?')
-  cores=$(nproc 2>/dev/null || echo '?')
-  memp=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{if (t>0) printf "%d", (t-a)*100/t}' /proc/meminfo 2>/dev/null)
-  SYS_LOAD=$load; SYS_CORES=$cores; SYS_MEM=${memp:-?}
+  cores=$(probe 5 nproc 2>/dev/null || echo '?')
+  memvals=$(awk '
+    /^MemTotal:/{t=$2} /^MemAvailable:/{a=$2}
+    /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2}
+    END {
+      if (t > 0 && a != "") printf "%d", (t - a) * 100 / t
+      printf "\t"
+      if (st > 0 && sf != "") printf "%d", (st - sf) * 100 / st
+    }' "$MEMINFO" 2>/dev/null)
+  IFS=$'\t' read -r memp swapp <<<"$memvals"
+  SYS_LOAD=$load; SYS_CORES=$cores; SYS_MEM=${memp:-?}; SYS_SWAP=$swapp
   if [ "$z" -gt 10 ]; then glyph=$ER; zc=$R; flag 2 system "$z zombie processes: $stray"
   elif [ "$z" -gt 1 ]; then glyph=$WA; zc=$Y; flag 1 system "$z zombie processes: $stray"
   elif [ "$z" -eq 1 ]; then glyph=$WA; zc=$Y; flag 1 system "1 zombie process: $stray"; fi
   [ "$benign" -gt 0 ] && note=" ${D}(+$benign)${N}"
-  printf '%s %s%-8s%s %b%s zombies%b%b %s·%s load %s/%s %s·%s mem %s%%\n' \
-    "$glyph" "$LBL" "system" "$N" "$zc" "$z" "$N" "$note" "$D" "$N" "$load" "$cores" "$D" "$N" "${memp:-?}"
+  # memory and swap: an unreadable value is unknown, never a green "0%"
+  if ! is_uint "$memp"; then
+    [ "$glyph" = "$OK" ] && glyph=$WA
+    cm=$Y
+    flag 1 system "memory usage could not be read from $MEMINFO"
+  elif [ "$memp" -ge "$MEM_CRIT" ]; then
+    glyph=$ER; cm=$R
+    flag 2 system "memory is ${memp}% in use ${D}(critical at ${MEM_CRIT}%)${N}"
+  elif [ "$memp" -ge "$MEM_WARN" ]; then
+    [ "$glyph" = "$OK" ] && glyph=$WA
+    cm=$Y
+    flag 1 system "memory is ${memp}% in use ${D}(warning at ${MEM_WARN}%)${N}"
+  fi
+  if is_uint "$swapp"; then
+    swapbit=" ${D}·${N} ${cs}swap ${swapp}%${N}"
+    if [ "$swapp" -ge "$SWAP_WARN" ]; then
+      cs=$Y
+      swapbit=" ${D}·${N} ${cs}swap ${swapp}%${N}"
+      [ "$glyph" = "$OK" ] && glyph=$WA
+      flag 1 system "swap is ${swapp}% full ${D}(warning at ${SWAP_WARN}%)${N}"
+    fi
+  fi
+  updates_probe
+  case "$UPDATES_STATE" in
+    "") ;;
+    unknown)
+      upbit=" ${D}·${N} ${Y}updates unknown${N}"
+      [ "$glyph" = "$OK" ] && glyph=$WA
+      flag 1 system "pending updates could not be checked ${D}(checkupdates failed or is not installed)${N}" ;;
+    0) upbit=" ${D}·${N} ${G}up to date${N}" ;;
+    *)
+      if [ "$UPDATES_WARN" -gt 0 ] && [ "$UPDATES_STATE" -ge "$UPDATES_WARN" ]; then
+        upbit=" ${D}·${N} ${Y}${UPDATES_STATE} updates${N}"
+        [ "$glyph" = "$OK" ] && glyph=$WA
+        flag 1 system "${UPDATES_STATE} package updates are pending ${D}(warning at ${UPDATES_WARN})${N}"
+      else
+        upbit=" ${D}·${N} ${D}${UPDATES_STATE} updates${N}"
+      fi ;;
+  esac
+  printf '%s %s%-8s%s %b%s zombies%b%b %s·%s load %s/%s %s·%s %smem %s%%%s%s%s\n' \
+    "$glyph" "$LBL" "system" "$N" "$zc" "$z" "$N" "$note" "$D" "$N" "$load" "$cores" "$D" "$N" \
+    "$cm" "${memp:-?}" "$N" "$swapbit" "$upbit"
 }
 
 # ---------- bottom row: btrfs maintenance triad + error counters ----------
@@ -1083,10 +1385,13 @@ main() {
     left+=("$(cat "$tmp/left.$i")"); i=$((i+1))
   done
   # right column: live state, top to bottom
-  system_line  > "$tmp/system"
-  jobs_line    > "$tmp/jobs"
-  storage_line > "$tmp/storage"
-  right=("$(cat "$tmp/system")" "$(cat "$tmp/jobs")" "$(cat "$tmp/storage")")
+  system_line   > "$tmp/system"
+  services_line > "$tmp/services"
+  jobs_line     > "$tmp/jobs"
+  storage_line  > "$tmp/storage"
+  right=("$(cat "$tmp/system")")
+  [ -s "$tmp/services" ] && right+=("$(cat "$tmp/services")")
+  right+=("$(cat "$tmp/jobs")" "$(cat "$tmp/storage")")
   btrfs_line > "$tmp/btrfs"
 
   # header: title + verdict on one line (widget config: title = "")

@@ -35,6 +35,9 @@ case "$command_name" in
     fi
 
     if [ "${1-}" = --failed ]; then
+      # a broken systemctl: nonzero with no output, so the widget must say
+      # "unknown" instead of claiming zero failed units
+      [ "$scenario" = broken ] && exit 1
       if [ "$scope" = system ] && { [ "$scenario" = retained ] || [ "$scenario" = unavailable ] || [ "$scenario" = mixed ]; }; then
         printf 'mnt-data.automount loaded failed failed Data automount\n'
         [ "$scenario" = mixed ] && printf 'backup.service loaded failed failed Backup service\n'
@@ -60,6 +63,24 @@ case "$command_name" in
       fi
 
       case "$unit" in
+        pipewire|wireplumber|xdg-desktop-portal|NetworkManager|bluetooth)
+          load=loaded; active=active
+          case "$scenario" in
+            svcnone) load=not-found ;;
+            svcfailed)
+              [ "$unit" = NetworkManager ] && active=failed
+              [ "$unit" = bluetooth ] && load=not-found ;;
+            svcstale)
+              [ "$unit" = bluetooth ] && active=inactive ;;
+            svcunknown)
+              [ "$unit" = pipewire ] && exit 0 ;;
+          esac
+          if [ "$load" = not-found ]; then
+            printf 'LoadState=not-found\nUnitFileState=\nActiveState=inactive\n'
+          else
+            printf 'LoadState=%s\nUnitFileState=enabled\nActiveState=%s\n' "$load" "$active"
+          fi
+          exit 0 ;;
         mnt-data.automount)
           printf '%s\n' \
             'Description=Data automount' \
@@ -84,12 +105,24 @@ case "$command_name" in
             'StateChangeTimestamp=Mon 2026-08-25 10:00:00 -03' \
             'ExecMainCode=exited' \
             'ExecMainStatus=1' ;;
+        *)
+          # real systemd answers not-found for units that are not installed
+          printf 'LoadState=not-found\nUnitFileState=\nActiveState=inactive\n' ;;
       esac
       exit 0
     fi
     ;;
   journalctl)
     printf 'Mount request failed because the network was unreachable\n'
+    ;;
+  checkupdates)
+    case "$scenario" in
+      updates)
+        printf 'alpha 1.0-1 -> 1.1-1\nbeta 2.0-1 -> 2.1-1\ngamma 3.0-1 -> 3.0.1-1\n' ;;
+      updatesfail)
+        printf 'error: failed to synchronise any databases\n'; exit 1 ;;
+      *) exit 2 ;;
+    esac
     ;;
   df)
     case "$scenario" in
@@ -146,9 +179,18 @@ case "$command_name" in
 esac
 MOCK
 chmod +x "$mock_bin/mock-command"
-for command_name in systemctl journalctl df findmnt systemd-escape btrfs ps nproc du; do
+for command_name in systemctl journalctl df findmnt systemd-escape btrfs ps nproc du checkupdates; do
   ln -s mock-command "$mock_bin/$command_name"
 done
+
+meminfo_normal="$test_tmp/meminfo-normal"
+printf '%s\n' 'MemTotal:       1000000 kB' 'MemAvailable:    900000 kB' \
+  'SwapTotal:      1000000 kB' 'SwapFree:        900000 kB' >"$meminfo_normal"
+meminfo_pressure="$test_tmp/meminfo-pressure"
+printf '%s\n' 'MemTotal:       1000000 kB' 'MemAvailable:     10000 kB' \
+  'SwapTotal:      1000000 kB' 'SwapFree:         10000 kB' >"$meminfo_pressure"
+meminfo_partial="$test_tmp/meminfo-partial"
+printf '%s\n' 'MemTotal:       1000000 kB' >"$meminfo_partial"
 
 plain_output() {
   sed -E $'s/\x1b\\[[0-9;]*m//g'
@@ -234,5 +276,85 @@ details=$(run_widget healthy --details --grub-btrfs-cfg /nonexistent --no-btrfs)
 assert_contains "$details" 'all systems healthy'
 assert_contains "$details" 'Nothing is flagged'
 assert_not_contains "$details" 'problems detected'
+
+# services: a failed daemon is critical; an uninstalled one is silently absent
+svcfailed=$(run_widget svcfailed --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$svcfailed" 'problems detected'
+assert_contains "$svcfailed" 'network failed'
+assert_contains "$svcfailed" 'audio ok'
+assert_not_contains "$svcfailed" 'bt'
+
+svc_details=$(run_widget svcfailed --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$svc_details" 'NetworkManager is failed'
+assert_contains "$svc_details" 'Services'
+assert_contains "$svc_details" 'network    failed'
+
+# every default service missing: unknown, never a silent "all healthy"
+svcnone=$(run_widget svcnone --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$svcnone" 'all systems healthy'
+assert_contains "$svcnone" 'none installed'
+svcnone_details=$(run_widget svcnone --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$svcnone_details" 'None of the configured services are installed on this host — nothing to check.'
+
+# an unreadable unit is unknown, never ok
+svcunknown=$(run_widget svcunknown --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$svcunknown" 'attention needed'
+assert_contains "$svcunknown" 'audio unknown'
+svcunknown_details=$(run_widget svcunknown --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$svcunknown_details" 'pipewire (state could not be read)'
+
+# installed but inactive is informational: the host decided, it is not a fault
+svcstale=$(run_widget svcstale --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$svcstale" 'bt off'
+assert_contains "$svcstale" 'all systems healthy'
+
+noservices=$(run_widget healthy --no-services --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_not_contains "$noservices" 'services'
+
+customservice=$(run_widget healthy --service custom:system:backup-daemon \
+  --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_not_contains "$customservice" 'audio'
+assert_contains "$customservice" 'none installed'
+assert_contains "$customservice" 'all systems healthy'
+
+# memory and swap pressure raise the verdict; unreadable memory is "unknown"
+mempress=$(run_widget healthy --meminfo "$meminfo_pressure" --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$mempress" 'problems detected'
+assert_contains "$mempress" 'mem 99%'
+assert_contains "$mempress" 'swap 99%'
+mem_details=$(run_widget healthy --meminfo "$meminfo_pressure" --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$mem_details" 'memory is 99% in use'
+assert_contains "$mem_details" 'swap is 99% full'
+assert_contains "$mem_details" 'swap storm'
+
+memunknown=$(run_widget healthy --meminfo "$meminfo_partial" --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$memunknown" 'attention needed'
+assert_contains "$memunknown" 'mem ?%'
+memunknown_details=$(run_widget healthy --meminfo "$meminfo_partial" --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$memunknown_details" 'memory usage could not be read'
+
+# pending updates are informational by default, warnings only above --updates-warn
+updates=$(run_widget updates --updates --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$updates" '3 updates'
+assert_contains "$updates" 'all systems healthy'
+
+updateswarn=$(run_widget updates --updates-warn 2 --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$updateswarn" 'attention needed'
+updates_details=$(run_widget updates --updates-warn 2 --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$updates_details" '3 package updates are pending'
+
+updatesfail=$(run_widget updatesfail --updates --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$updatesfail" 'attention needed'
+assert_contains "$updatesfail" 'updates unknown'
+
+updatesoff=$(run_widget updates --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_not_contains "$updatesoff" 'updates'
+
+# a systemctl that fails must not read as zero failed units
+broken=$(run_widget broken --meminfo "$meminfo_normal" --grub-btrfs-cfg /nonexistent --no-btrfs --single-column)
+assert_contains "$broken" 'attention needed'
+assert_contains "$broken" 'unknown'
+broken_details=$(run_widget broken --meminfo "$meminfo_normal" --details --grub-btrfs-cfg /nonexistent --no-btrfs)
+assert_contains "$broken_details" 'failed-unit state could not be read'
 
 printf 'system-health widget scenarios passed\n'
