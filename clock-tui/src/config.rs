@@ -89,6 +89,9 @@ pub struct ClockConfig {
     pub widgets: Vec<ClockWidgetConfig>,
     #[serde(default = "default_widget_themes")]
     pub widget_themes: Vec<String>,
+    /// Upper bound for the auto-sized clock while widgets are visible.
+    #[serde(default)]
+    pub max_widget_clock_size: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -201,6 +204,7 @@ impl Default for ClockConfig {
             timezone: None,
             widgets: Vec::new(),
             widget_themes: default_widget_themes(),
+            max_widget_clock_size: None,
         }
     }
 }
@@ -365,6 +369,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(custom_config.clock.widget_themes, vec!["light", "dark"]);
+    }
+
+    #[test]
+    fn clock_max_widget_clock_size_is_optional() {
+        let default_config: Config = toml::from_str("[clock]").unwrap();
+        assert_eq!(default_config.clock.max_widget_clock_size, None);
+
+        let custom_config: Config = toml::from_str(
+            r#"
+            [clock]
+            max_widget_clock_size = 2
+            "#,
+        )
+        .unwrap();
+        assert_eq!(custom_config.clock.max_widget_clock_size, Some(2));
     }
 
     #[test]

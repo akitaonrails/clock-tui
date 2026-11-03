@@ -322,17 +322,20 @@ impl App {
                         .map(|c| c.widget_themes.clone())
                         .unwrap_or_default(),
                 );
-                self.clock = Some(Clock::new(
-                    size,
-                    style,
-                    display.title(),
-                    display.show_date,
-                    display.show_millis,
-                    display.show_seconds,
-                    timezone.or_else(|| clock_config.and_then(|c| c.timezone)),
-                    clock_config.map(|c| c.widgets.clone()).unwrap_or_default(),
-                    widget_themes,
-                ));
+                self.clock = Some(
+                    Clock::new(
+                        size,
+                        style,
+                        display.title(),
+                        display.show_date,
+                        display.show_millis,
+                        display.show_seconds,
+                        timezone.or_else(|| clock_config.and_then(|c| c.timezone)),
+                        clock_config.map(|c| c.widgets.clone()).unwrap_or_default(),
+                        widget_themes,
+                    )
+                    .with_max_widget_size(clock_config.and_then(|c| c.max_widget_clock_size)),
+                );
             }
             Mode::Timer {
                 durations,
