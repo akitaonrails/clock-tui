@@ -441,6 +441,7 @@ impl App {
                 KeyCode::Char('T') => w.cycle_widget_theme(),
                 KeyCode::Char('g') => w.cycle_widget_group(),
                 KeyCode::Char('z') => w.toggle_widgets(),
+                KeyCode::Char('s') => w.toggle_seconds(),
                 KeyCode::Home => w.scroll_active_widget_to_top(),
                 KeyCode::End => w.scroll_active_widget_to_bottom(),
                 KeyCode::PageUp => w.scroll_active_widget_by_page(-1),
@@ -976,6 +977,21 @@ mod tests {
                 .current_widget_theme_for_test(),
             "nerv"
         );
+    }
+
+    #[test]
+    fn s_toggles_seconds_only_in_clock_mode() {
+        let mut app = App::parse_from(["tclock", "--no-seconds"]);
+        app.init_app();
+        assert!(!app.clock.as_ref().unwrap().show_secs);
+        app.on_key(KeyCode::Char('s'));
+        assert!(app.clock.as_ref().unwrap().show_secs);
+        app.on_key(KeyCode::Char('s'));
+        assert!(!app.clock.as_ref().unwrap().show_secs);
+        app.set_mode(Mode::Stopwatch);
+        app.on_key(KeyCode::Char('s'));
+        assert!(app.clock.is_none());
+        assert!(app.stopwatch.is_some());
     }
 
     #[test]

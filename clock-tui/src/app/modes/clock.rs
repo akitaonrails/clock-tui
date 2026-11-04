@@ -1,7 +1,7 @@
 use crate::clock_text::font::bricks::BricksFont;
 use crate::clock_text::ClockText;
 use crate::config::ClockWidgetConfig;
-use chrono::{Local, NaiveDateTime, Utc};
+use chrono::{Local, NaiveDateTime, Timelike, Utc};
 use chrono_tz::Tz;
 use ratatui::{
     buffer::Buffer,
@@ -48,6 +48,23 @@ impl Clock {
             widgets_visible: true,
             widgets: ClockWidgets::new(widgets, widget_themes),
         }
+    }
+
+    pub(crate) fn toggle_seconds(&mut self) {
+        self.show_secs = !self.show_secs;
+    }
+
+    fn time_text(&self, now: NaiveDateTime) -> String {
+        if !self.show_secs {
+            // Keep a full glyph slot so blinking never moves the clock or widgets.
+            let format = if now.second().is_multiple_of(2) {
+                "%H:%M"
+            } else {
+                "%H %M"
+            };
+            return now.format(format).to_string();
+        }
+        format_clock_seconds(now, self.show_millis)
     }
 
     pub(crate) fn tick(&mut self) {
@@ -126,13 +143,7 @@ impl Clock {
         } else {
             Local::now().naive_local()
         };
-        let time_str = if !self.show_secs {
-            now.format("%H:%M").to_string()
-        } else if self.show_millis {
-            now.format("%H:%M:%S%.1f").to_string()
-        } else {
-            now.format("%H:%M:%S").to_string()
-        };
+        let time_str = self.time_text(now);
         let time_str = time_str.as_str();
         let date = self
             .show_date
@@ -150,6 +161,14 @@ impl Clock {
             self.widgets.render_popup(area, buf, theme);
         }
     }
+}
+
+fn format_clock_seconds(now: NaiveDateTime, show_millis: bool) -> String {
+    let seconds = now.format("%H:%M:%S").to_string();
+    if show_millis {
+        return format!("{seconds}.{}", now.nanosecond() / 100_000_000);
+    }
+    seconds
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -229,6 +248,68 @@ impl Clock {
 mod tests {
     use super::*;
     use ratatui::style::Color;
+
+    #[test]
+    fn fractional_seconds_render_tenths_without_invalid_chrono_format() {
+        for (fraction, expected) in [("000", "0"), ("099", "0"), ("500", "5"), ("999", "9")] {
+            let now = NaiveDateTime::parse_from_str(
+                &format!("2026-10-15 12:34:01.{fraction}"),
+                "%Y-%m-%d %H:%M:%S%.f",
+            )
+            .unwrap();
+            assert_eq!(
+                format_clock_seconds(now, true),
+                format!("12:34:01.{expected}")
+            );
+            assert_eq!(format_clock_seconds(now, false), "12:34:01");
+        }
+    }
+
+    fn seconds_test_clock() -> Clock {
+        Clock::new(
+            1,
+            Style::default(),
+            None,
+            false,
+            false,
+            true,
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn hidden_seconds_blink_colon_once_per_second_without_layout_shift() {
+        let mut clock = seconds_test_clock();
+        clock.toggle_seconds();
+        for (second, expected) in [(0, "12:34"), (1, "12 34"), (2, "12:34")] {
+            let now = NaiveDateTime::parse_from_str(
+                &format!("2026-10-15 12:34:{second:02}"),
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .unwrap();
+            let text = clock.time_text(now);
+            assert_eq!(text, expected);
+            assert_eq!(
+                ClockText::new(text, &BricksFont::new(1), Style::default()).size(),
+                (38, 5)
+            );
+        }
+    }
+
+    #[test]
+    fn seconds_toggle_round_trip_restores_seconds_and_millis() {
+        let mut clock = seconds_test_clock();
+        let now = NaiveDateTime::parse_from_str("2026-10-15 12:34:01.500", "%Y-%m-%d %H:%M:%S%.f")
+            .unwrap();
+        assert_eq!(clock.time_text(now), "12:34:01");
+        clock.show_millis = true;
+        clock.toggle_seconds();
+        assert_eq!(clock.time_text(now), "12 34");
+        clock.toggle_seconds();
+        assert_eq!(clock.time_text(now), "12:34:01.5");
+    }
 
     #[test]
     fn widgets_get_extra_height_when_width_limits_square_clock() {

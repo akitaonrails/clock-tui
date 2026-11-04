@@ -83,6 +83,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     KeyCode::Char('T')
                     | KeyCode::Char('g')
                     | KeyCode::Char('z')
+                    | KeyCode::Char('s')
                     | KeyCode::Home
                     | KeyCode::End
                     | KeyCode::PageUp

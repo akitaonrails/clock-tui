@@ -50,6 +50,8 @@ The binary will be at `target/release/tclock`.
 tclock
 ```
 
+Press `s` in clock mode to toggle seconds. With seconds hidden, the hour/minute colon alternates visible and hidden each second without moving the digits. This changes the active clock only; restarting or switching modes restores configured display settings.
+
 Press `q` to exit. In the main loop, press `c`, `w`, or `t` to switch to clock, stopwatch, or timer mode. Press `Space` to pause/resume modes that support pausing.
 
 Use `--help` for all options:
